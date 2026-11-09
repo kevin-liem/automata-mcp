@@ -170,7 +170,7 @@ banned by WhatsApp or Telegram. Keep sending low-volume and scope the token to t
 chats it needs.
 
 The same dialog offers an optional **disclaimer**, off by default. Turned on, it
-starts as "Sent using Automata" and can be reworded (up to 200 characters). The
+starts as "Sent using DOPE" and can be reworded (up to 200 characters). The
 server appends it on its own line to every message that token sends. The model
 isn't asked to add it, so it can't forget it or change the wording. The tool's
 response names the appended text in `disclaimerAppended`. On Telegram the

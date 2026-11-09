@@ -123,7 +123,7 @@ export function describeScope(scope: TokenScope, kind: InstanceKind): string {
 }
 
 /** What the disclaimer field holds when an admin turns it on. Editable from there. */
-export const DEFAULT_SEND_DISCLAIMER = 'Sent using Automata'
+export const DEFAULT_SEND_DISCLAIMER = 'Sent using DOPE'
 
 /**
  * The tool that sends messages on this kind of connection, if it has one.
