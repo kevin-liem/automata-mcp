@@ -12,8 +12,10 @@ import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/brow
 type Method = 'totp' | 'webauthn' | 'recovery'
 
 const { refresh } = useSession()
+const route = useRoute()
 
-const email = ref('')
+// Prefilled after a password reset, which ends at this page.
+const email = ref(typeof route.query.email === 'string' ? route.query.email : '')
 const password = ref('')
 const error = ref('')
 const busy = ref(false)
@@ -133,7 +135,15 @@ function choose(next: Method) {
       </div>
 
       <div class="space-y-2">
-        <Label for="password">Password</Label>
+        <div class="flex items-baseline justify-between gap-2">
+          <Label for="password">Password</Label>
+          <NuxtLink
+            :to="email ? { path: '/forgot-password', query: { email } } : '/forgot-password'"
+            class="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+          >
+            Forgot password?
+          </NuxtLink>
+        </div>
         <Input id="password" v-model="password" type="password" autocomplete="current-password" required />
       </div>
 

@@ -1,7 +1,12 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { H3Event } from 'h3'
 import { assertNever } from '#shared/connection'
-import type { AppInvitation, AppUser, Db } from './app-db'
+import type { AppInvitation, AppUser, Db, OrgRole } from './app-db'
+import {
+  alreadyRegisteredEmail, emailChangedNoticeEmail, emailChangeVerificationEmail,
+  invitedSignupVerificationEmail, signupVerificationEmail,
+} from '../emails/account'
+import type { EmailBrand, RenderedEmail } from '../emails/layout'
 
 /**
  * Proving an address before it becomes someone's sign-in: at signup (with or
@@ -33,6 +38,18 @@ import type { AppInvitation, AppUser, Db } from './app-db'
  * in". Otherwise a stranger signs up with their own mailbox, forwards the
  * link, and whoever presses Confirm is signed into the stranger's organization
  * — where every connection they then set up lands.
+ *
+ * **An invited signup or an address change is finished only where it was
+ * started.** There the mailbox proof and the credential come from different
+ * people unless one browser holds both: whoever held the invitation code chose
+ * the pending row's password, whoever signed in asked for the change. Created
+ * from any browser, a leaked code plus one click by the invitee is an account
+ * at the invitee's address, under the leaker's password, inside the inviting
+ * organization (GHSA-2j4c-pw7p-3xp5); an address change confirmed anywhere
+ * hands the address to whoever asked (GHSA-rq62-jqgm-9fj9). So the link is
+ * refused elsewhere — 403 `verification_other_browser`, the row kept — unless
+ * the confirmer holds the row's cookie (or, for a change, is signed in as that
+ * account). A plain self-signup keeps the old rule above.
  *
  * `NUXT_EMAIL_VERIFICATION` is `auto` (default: on when `NUXT_SMTP_HOST` is
  * set), `required` or `off`. Anything else reads as `required`, since a typo
@@ -135,7 +152,8 @@ function mintSecrets(id: string) {
  * code alone.
  */
 function verificationUrl(linkToken: string): string | undefined {
-  const origin = String(useRuntimeConfig().public.appUrl ?? '').replace(/\/+$/, '')
+  // The same reading of the setting as the mail's logo and Sign in button.
+  const origin = emailBrand().appUrl
   return origin ? `${origin}/verify-email?token=${linkToken}` : undefined
 }
 
@@ -223,37 +241,49 @@ function recordVerificationMail(event: H3Event, email: string): void {
 
 // ── mail ───────────────────────────────────────────────────────────────────
 
+/** The organization and role an invited signup would join, for the mail and the Confirm screen. */
+export interface InviteContext { orgName: string, role: OrgRole }
+
+async function inviteContext(db: Db, inviteId: string | undefined): Promise<InviteContext | undefined> {
+  if (!inviteId) return undefined
+  const [row] = await db<{ org_name: string, role: OrgRole }[]>`
+    SELECT o.name AS org_name, i.role
+    FROM app.invitations i JOIN app.organizations o ON o.id = i.org
+    WHERE i.id = ${inviteId}
+  `
+  return row ? { orgName: row.org_name, role: row.role } : undefined
+}
+
+/**
+ * Which of the four verification mails a row gets, and what it says. The
+ * templates in `server/emails/account.ts` own the wording; this decides only
+ * which one applies.
+ */
 export function verificationMail(input: {
   purpose: VerificationPurpose
   code: string
   url?: string
   /** Signup for an address that already has an account: say so, carry no code. */
   alreadyRegistered?: boolean
-}): { subject: string, text: string } {
-  if (input.alreadyRegistered) {
-    return {
-      subject: 'You already have an account',
-      text: [
-        'Someone tried to create an account with this email address, which already has one.',
-        '',
-        'If that was you, sign in instead. If not, you can ignore this email — nothing was changed.',
-      ].join('\n'),
-    }
-  }
+  /** Set for an invited signup: named in the mail, so it cannot pass for any other. */
+  invite?: InviteContext
+  /** For an address change: the address the account signs in with until this is confirmed. */
+  currentEmail?: string
+  /** The address the mail goes to. */
+  email: string
+}, brand: EmailBrand): RenderedEmail {
+  if (input.alreadyRegistered) return alreadyRegisteredEmail(brand)
 
-  const what = input.purpose === 'signup' ? 'finish creating your account' : 'confirm your new sign-in address'
-  return {
-    subject: input.purpose === 'signup' ? 'Confirm your email address' : 'Confirm your new email address',
-    text: [
-      `Use this code to ${what}:`,
-      '',
-      `    ${input.code}`,
-      '',
-      ...(input.url ? ['Or open this link:', input.url, ''] : []),
-      'The code and link expire in 30 minutes.',
-      '',
-      'If you did not ask for this, you can ignore this email.',
-    ].join('\n'),
+  const verification = { code: input.code, url: input.url, expiresInMs: VERIFICATION_TTL_MS }
+  switch (input.purpose) {
+    case 'signup':
+      return input.invite
+        ? invitedSignupVerificationEmail({ ...verification, orgName: input.invite.orgName, role: input.invite.role }, brand)
+        : signupVerificationEmail(verification, brand)
+    case 'email_change':
+      return emailChangeVerificationEmail({ ...verification, currentEmail: input.currentEmail ?? '', newEmail: input.email }, brand)
+    default:
+      return assertNever(input.purpose)
   }
 }
 
@@ -271,18 +301,29 @@ async function addressRegistered(db: Db, email: string): Promise<boolean> {
  */
 async function mailVerification(
   event: H3Event,
-  row: Pick<VerificationRow, 'purpose' | 'email'>,
+  row: Pick<VerificationRow, 'purpose' | 'email' | 'invite_id' | 'user_id'>,
   secrets: { code: string, linkToken: string },
 ): Promise<boolean> {
-  const alreadyRegistered = row.purpose === 'signup' && await addressRegistered(await appDb(), row.email)
+  const sql = await appDb()
+  const alreadyRegistered = row.purpose === 'signup' && await addressRegistered(sql, row.email)
   const mail = verificationMail({
     purpose: row.purpose,
     code: secrets.code,
     url: verificationUrl(secrets.linkToken),
     alreadyRegistered,
-  })
+    invite: row.purpose === 'signup' ? await inviteContext(sql, row.invite_id) : undefined,
+    currentEmail: row.purpose === 'email_change' ? await currentEmailOf(sql, row.user_id) : undefined,
+    email: row.email,
+  }, emailBrand())
   recordVerificationMail(event, row.email)
-  return sendAppEmail({ to: row.email, subject: mail.subject, text: mail.text })
+  return sendAppEmail({ to: row.email, ...mail })
+}
+
+/** The address an account signs in with now, named in the address-change mail. */
+async function currentEmailOf(db: Db, userId: string | undefined): Promise<string | undefined> {
+  if (!userId) return undefined
+  const [row] = await db<Pick<AppUser, 'email'>[]>`SELECT email FROM app.users WHERE id = ${userId}`
+  return row?.email
 }
 
 // ── starting ───────────────────────────────────────────────────────────────
@@ -341,7 +382,9 @@ export async function startVerification(event: H3Event, input: StartInput): Prom
     `
   })
 
-  if (!await mailVerification(event, { purpose: input.purpose, email }, secrets)) {
+  const inviteId = input.purpose === 'signup' ? input.inviteId : undefined
+  const userId = input.purpose === 'email_change' ? input.userId : undefined
+  if (!await mailVerification(event, { purpose: input.purpose, email, invite_id: inviteId, user_id: userId }, secrets)) {
     await sql`DELETE FROM app.email_verifications WHERE id = ${id}`
     throw verificationUndeliverable()
   }
@@ -489,28 +532,76 @@ export async function verifyByLink(event: H3Event, token: string): Promise<Verif
   return await complete(event, tx => spend(tx, { linkHash: sha256(token) }), row => isWaitingBrowser(event, row))
 }
 
+export interface VerificationLinkInfo {
+  purpose: VerificationPurpose
+  email: string
+  /** Set for an invited signup: the organization and role confirming would join. */
+  invite?: InviteContext
+  /** False when `verifyByLink` would refuse this browser (see `mustFinishWhereStarted`). */
+  confirmableHere: boolean
+}
+
 /**
  * What a mailed link would confirm, for the Confirm screen, without spending
  * it. Holding the token is the authorization: the address is the one it was
- * mailed to.
+ * mailed to, and the organization is the one the invitation sent there names.
  */
-export async function describeVerificationLink(token: string): Promise<{ purpose: VerificationPurpose, email: string } | undefined> {
+export async function describeVerificationLink(event: H3Event, token: string): Promise<VerificationLinkInfo | undefined> {
   try {
     const sql = await appDb()
-    const [row] = await sql<Pick<VerificationRow, 'purpose' | 'email'>[]>`
-      SELECT purpose, email
+    const [row] = await sql<Pick<SpentRow, 'purpose' | 'email' | 'invite_id' | 'user_id' | 'pending_hash'>[]>`
+      SELECT purpose, email, invite_id, user_id, pending_hash
       FROM app.email_verifications
       WHERE link_hash = ${sha256(token)}
         AND expires_at > now()
         AND attempts < ${MAX_CODE_ATTEMPTS}
     `
-    if (row?.purpose === 'email_change' && emailChangeDisabled()) return undefined
-    return row ? { purpose: row.purpose, email: row.email } : undefined
+    if (!row) return undefined
+    if (row.purpose === 'email_change' && emailChangeDisabled()) return undefined
+    const invite = row.purpose === 'signup' ? await inviteContext(sql, row.invite_id) : undefined
+    const confirmableHere = !mustFinishWhereStarted(event, row, isWaitingBrowser(event, row))
+    return { purpose: row.purpose, email: row.email, ...(invite ? { invite } : {}), confirmableHere }
   }
   catch (cause) {
     console.error('[verify] could not read a verification link from the app database:', cause)
     throw appDbUnavailable(cause)
   }
+}
+
+/**
+ * Whether a link confirmed in this request must be refused because the row can
+ * only be finished where it was started. An invited signup's password was chosen
+ * by whoever held the code, and an address change was asked for by whoever was
+ * signed in; the mailbox owner confirming somewhere else must hand neither of
+ * them anything. A self-signup is not bound: it creates an account in a new
+ * organization and signs nobody in elsewhere (see the module comment).
+ */
+function mustFinishWhereStarted(
+  event: H3Event,
+  row: Pick<VerificationRow, 'purpose' | 'invite_id' | 'user_id'>,
+  ownsCookie: boolean,
+): boolean {
+  if (ownsCookie) return false
+  switch (row.purpose) {
+    case 'signup':
+      return Boolean(row.invite_id)
+    case 'email_change':
+      // Signed in as the account that asked counts as "where it was started":
+      // a session is a stronger proof of that than the pending cookie.
+      return !row.user_id || (event.context.user as AppUser | undefined)?.id !== row.user_id
+    default:
+      return assertNever(row.purpose)
+  }
+}
+
+function finishWhereStarted(purpose: VerificationPurpose): Error {
+  return createError({
+    statusCode: 403,
+    statusMessage: purpose === 'signup'
+      ? 'Open this link in the browser where you signed up, or enter the code from the email there.'
+      : 'Open this link in the browser where you asked for the change, signed in to that account, or enter the code from the email there.',
+    data: { code: 'verification_other_browser' },
+  })
 }
 
 /**
@@ -546,6 +637,7 @@ async function complete(
   const sql = await appDb()
   let spentId: string | undefined
   let ownsCookie = false
+  let refusedHere = false
 
   let outcome: { row: VerificationRow, userId?: string, previousEmail?: string }
   try {
@@ -554,6 +646,12 @@ async function complete(
       if (!row) throw verificationExpired()
       spentId = row.id
       ownsCookie = waitingBrowser(row)
+      // Thrown inside the transaction, so the spend above rolls back and the
+      // row stays for the browser that can finish it.
+      if (mustFinishWhereStarted(event, row, ownsCookie)) {
+        refusedHere = true
+        throw finishWhereStarted(row.purpose)
+      }
 
       switch (row.purpose) {
         case 'signup':
@@ -569,7 +667,7 @@ async function complete(
     // Refused for good (address taken meanwhile, invitation revoked): the row
     // can never succeed, so it goes rather than waiting out its expiry.
     const status = (error as { statusCode?: number }).statusCode
-    if (spentId && status && status < 500 && status !== 410) {
+    if (spentId && !refusedHere && status && status < 500 && status !== 410) {
       await sql`DELETE FROM app.email_verifications WHERE id = ${spentId}`.catch(() => {})
       if (ownsCookie) clearVerifyCookie(event)
     }
@@ -583,15 +681,8 @@ async function complete(
   if (signedIn) await startSession(event, userId!)
   if (previousEmail) {
     // Best effort: tells the owner of the old address, in case it was not them.
-    void sendAppEmail({
-      to: previousEmail,
-      subject: 'Your sign-in email address was changed',
-      text: [
-        `The sign-in address of your account was changed from ${previousEmail} to ${row.email}.`,
-        '',
-        'If you did not do this, contact an admin of your organization.',
-      ].join('\n'),
-    })
+    const notice = emailChangedNoticeEmail({ previousEmail, newEmail: row.email, changedAt: new Date() }, emailBrand())
+    void sendAppEmail({ to: previousEmail, ...notice })
   }
 
   const next = signedIn && row.plan === 'pro' && !row.invite_id && hostedMode() ? 'checkout' as const : undefined

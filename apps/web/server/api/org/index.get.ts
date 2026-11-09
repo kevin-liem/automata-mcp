@@ -9,6 +9,9 @@
  *
  * `toolCalls` goes to everyone: a member's calls are recorded too, and whether
  * they are is theirs to know.
+ *
+ * `passwordReset` tells an admin whether the Team page's "Send password reset"
+ * can work here: it needs mail.
  */
 export default defineEventHandler(async (event) => {
   const actor = await requireMembership(event)
@@ -24,5 +27,6 @@ export default defineEventHandler(async (event) => {
     members,
     invites,
     toolCalls,
+    passwordReset: actor.role === 'admin' ? passwordResetAvailable() : undefined,
   }
 })

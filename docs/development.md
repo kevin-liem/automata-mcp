@@ -126,7 +126,8 @@ There is no `predev` hook — bring the services up yourself.
 | `pnpm dev` | Nuxt dev server on the host |
 | `pnpm build` / `pnpm preview` | production build / serve it |
 | `pnpm generate` | `nuxt generate` |
-| `pnpm typecheck` | `nuxt typecheck` across app + server — with `bridge:typecheck` and `cloud:typecheck`, the only local checks; there is no test framework |
+| `pnpm typecheck` | `nuxt typecheck` across app + server — with `bridge:typecheck`, `cloud:typecheck` and `test:emails`, the only local checks; there is no test framework |
+| `pnpm test:emails` | the account-email templates against their snapshots in `apps/web/test/__snapshots__/emails/` (Node's built-in runner); `UPDATE_SNAPSHOTS=1` accepts a deliberate change |
 | `pnpm services:up` | Postgres only |
 | `pnpm services:up:whatsapp` | + Evolution and Redis |
 | `pnpm services:up:telegram` | + the Telegram bridge |

@@ -105,13 +105,20 @@ export function claimPasswordAttempt(event: H3Event, email: string): number {
  * pruned or evicted is simply absent.
  */
 export function releasePasswordAttempt(event: H3Event, email: string, at: number): void {
-  for (const key of keysFor(event, email)) {
-    const times = failures.get(key)
-    const index = times?.indexOf(at) ?? -1
-    if (index < 0) continue
-    times!.splice(index, 1)
-    if (!times!.length) failures.delete(key)
-  }
+  for (const key of keysFor(event, email)) dropAttempt(failures, key, at)
+}
+
+/**
+ * Remove one attempt timestamped `at` from `key` in a throttle's map — the
+ * hand-back every claim-before-check throttle shares. Entries with equal
+ * timestamps are interchangeable; one already pruned is simply absent.
+ */
+export function dropAttempt(attempts: Map<string, number[]>, key: string, at: number): void {
+  const times = attempts.get(key)
+  const index = times?.indexOf(at) ?? -1
+  if (index < 0) return
+  times!.splice(index, 1)
+  if (!times!.length) attempts.delete(key)
 }
 
 export function clearLoginFailures(email: string): void {
@@ -168,4 +175,63 @@ export function assertVerifyCodeAllowed(event: H3Event, email: string): void {
 export function recordVerifyCodeFailure(email: string): void {
   const key = verifyCodeKey(email)
   failures.set(key, [...(failures.get(key) ?? []), Date.now()])
+}
+
+/**
+ * Wrong password-reset codes, capped per address and per client, across every
+ * reset row. A right code is an account, so this is tighter than the signup
+ * code: ten per fifteen minutes on each key, as everywhere here, and also
+ * thirty per day per address. Each row allows five guesses, but asking again
+ * mints a new row with five more, and only the mail throttle limits that — so
+ * the per-row cap alone bounds nothing. At thirty guesses a day a six-digit code
+ * holds for decades rather than months.
+ *
+ * Keyed on the address whether or not it has an account, and counted for codes
+ * that matched no row, so the answer never says which addresses are real. The
+ * price is the per-email login key's: a stranger can keep code entry for an
+ * address locked. Only the code — the mailed link is not throttled here, so the
+ * owner still resets with it. Checked before any row is touched.
+ */
+const RESET_DAY_MS = 24 * 60 * 60_000
+const RESET_DAILY_LIMIT = 30
+const resetDaily = new Map<string, number[]>()
+
+function resetCodeKeys(event: H3Event, email: string): string[] {
+  return [`reset-code:${normaliseEmail(email)}`, `reset-code-ip:${clientIp(event)}`]
+}
+
+export function assertResetCodeAllowed(event: H3Event, email: string): void {
+  const now = Date.now()
+  prune(now)
+  for (const [key, times] of resetDaily) {
+    const recent = times.filter(at => now - at < RESET_DAY_MS)
+    if (recent.length) resetDaily.set(key, recent)
+    else resetDaily.delete(key)
+  }
+  for (const key of resetDaily.keys()) {
+    if (resetDaily.size <= MAX_TRACKED_KEYS) break
+    resetDaily.delete(key)
+  }
+
+  let retryAt = 0
+  for (const key of resetCodeKeys(event, email)) {
+    const times = failures.get(key) ?? []
+    if (times.length >= LOGIN_FAILURE_LIMIT) {
+      retryAt = Math.max(retryAt, times[times.length - LOGIN_FAILURE_LIMIT]! + LOGIN_WINDOW_MS)
+    }
+  }
+  const daily = resetDaily.get(normaliseEmail(email)) ?? []
+  if (daily.length >= RESET_DAILY_LIMIT) {
+    retryAt = Math.max(retryAt, daily[daily.length - RESET_DAILY_LIMIT]! + RESET_DAY_MS)
+  }
+  if (retryAt) {
+    throwThrottled(event, retryAt - now, 'Too many wrong codes. Use the link in the email, or try again later.')
+  }
+}
+
+export function recordResetCodeFailure(event: H3Event, email: string): void {
+  const now = Date.now()
+  for (const key of resetCodeKeys(event, email)) failures.set(key, [...(failures.get(key) ?? []), now])
+  const address = normaliseEmail(email)
+  resetDaily.set(address, [...(resetDaily.get(address) ?? []), now])
 }

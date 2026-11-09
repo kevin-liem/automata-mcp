@@ -6,7 +6,8 @@ import type { ChatActivityRow } from './evolution-db'
 import { canReadMessages, lastMessagePayloads, listChatActivity, listMessagesPage, senderOf } from './evolution-db'
 import type { LidLinks } from './whatsapp-identity'
 import { canonicalJid, lidLinks, linkedJidOf, phoneNumberBehind, phoneNumberOf } from './whatsapp-identity'
-import { GROUP_SCAN_FAILURE_BACKOFF_MS, GROUP_SCAN_TIMEOUT_MS, claimGroupScan, readStoredGroups, recordGroupScanFailure, replaceStoredGroups } from './whatsapp-groups'
+import type { GroupInfo } from './whatsapp-groups'
+import { groupNamesFor } from './whatsapp-groups'
 
 /**
  * Reading conversations out of Evolution.
@@ -47,7 +48,11 @@ export interface ChatSummary {
    * this chat is scoped to the LID, not to this number.
    */
   phoneNumber?: string
-  /** Members in a group, and only when the group lookup actually ran. */
+  /**
+   * Members in a group, as of the last time WhatsApp was asked about it
+   * (`whatsapp-groups.ts`: within about a week, longer while disconnected).
+   * Absent when it never was — not zero.
+   */
   participantCount?: number
   profilePicUrl?: string
   updatedAt?: string
@@ -305,8 +310,8 @@ async function nameChats(instance: AppInstance, drafts: ChatDraft[]): Promise<Li
   if (!drafts.length) return []
 
   // Only touch the group cache when it can change an answer.
-  const needsGroups = drafts.some(draft => draft.jid.endsWith('@g.us') && !draft.chatName)
-  const { groups, contacts, links } = await nameSources(instance, needsGroups)
+  const groupJids = drafts.filter(draft => draft.jid.endsWith('@g.us') && !draft.chatName).map(draft => draft.jid)
+  const { groups, contacts, links } = await nameSources(instance, groupJids)
 
   return drafts.map((draft) => {
     const isGroup = draft.jid.endsWith('@g.us')
@@ -332,7 +337,7 @@ async function nameChats(instance: AppInstance, drafts: ChatDraft[]): Promise<Li
       // phone-number chat never gets one here.
       phoneNumber: phoneNumberBehind(links, draft.jid),
       participantCount: group?.size,
-      profilePicUrl: draft.profilePicUrl ?? contact?.profilePicUrl ?? group?.pictureUrl,
+      profilePicUrl: draft.profilePicUrl ?? contact?.profilePicUrl,
       updatedAt: draft.updatedAt,
       lastMessageAt: draft.lastMessageAt,
       lastMessagePreview: draft.lastMessagePreview,
@@ -347,14 +352,15 @@ function jidLabel(jid: string): string {
 }
 
 /**
- * The three caches a chat label is built from, loaded together. The group
- * refresh is never awaited — see `groupsFor`; a cold cache waits only on the
- * app DB — so skip it when no group needs a name.
+ * The three caches a chat label is built from, loaded together. Group names
+ * never wait on WhatsApp — see `groupNamesFor`; a cold cache waits only on two
+ * database reads — and are skipped when no group needs a name. `groupJids` are
+ * the groups about to be labelled.
  */
-async function nameSources(instance: AppInstance, needsGroups: boolean) {
+async function nameSources(instance: AppInstance, groupJids: readonly string[]) {
   const evolution = evolutionClientForInstance(instance)
   const [groups, contacts, links] = await Promise.all([
-    needsGroups ? groupsFor(instance, evolution) : emptyGroups,
+    groupJids.length ? groupNamesFor(instance, evolution, groupJids) : emptyGroups,
     contactDirectory(instance, evolution),
     lidLinks(instance),
   ])
@@ -840,8 +846,8 @@ async function accountNames(
   chatJids: string[],
 ): Promise<{ chatName: (jid: string) => string, directory?: MentionDirectory }> {
   try {
-    const needsGroups = chatJids.some(jid => jid.endsWith('@g.us'))
-    const { groups, contacts, links } = await nameSources(instance, needsGroups)
+    const groupJids = [...new Set(chatJids.filter(jid => jid.endsWith('@g.us')))]
+    const { groups, contacts, links } = await nameSources(instance, groupJids)
 
     return {
       directory: contactsToDirectory(contacts),
@@ -1057,84 +1063,8 @@ async function fetchContacts(instance: AppInstance, evolution: EvolutionClient):
   return byJid
 }
 
-/**
- * Group subjects and sizes, keyed by group JID — whatever the cache holds now.
- *
- * **Fetching them from WhatsApp is expensive, so no request waits for it and it
- * is rare.** Evolution answers `fetchAllGroups` from Baileys rather than its
- * database, and one call costs about two WhatsApp queries per group — a
- * `groupMetadata` each, set off by the `groups.update` the fetch emits, and a
- * profile picture each, sequentially. `getParticipants=false` skips neither and
- * no endpoint returns subjects without them. Run every few minutes, WhatsApp
- * answered with `rate-overlimit`; on a fifty-group account it also outlasted
- * any timeout a request could afford. So the scan runs at most once per
- * `GROUP_SCAN_INTERVAL_MS` per account, by whichever replica claims it, and
- * everything else reads `app.whatsapp_groups` — `whatsapp-groups.ts` states the
- * schedule and the staleness rule.
- *
- * The in-memory cache (`staleWhileRevalidate`) only saves the table read. A
- * cold process awaits one indexed app-database read as its `seed`, never
- * Evolution, so the first listing after a deploy, on another replica, or for a
- * disconnected account still has subjects and `participantCount`. After
- * `GROUP_TTL_MS` an entry is re-read in the background, which picks up a scan
- * another replica ran; the read that finds a scan due runs it, in the
- * background too.
- *
- * A failed scan is usually an expected offline state (no live socket while
- * disconnected), not a fault: the stored subjects keep being served and every
- * replica waits out `GROUP_SCAN_FAILURE_BACKOFF_MS`. It is logged, briefly,
- * since a scan that never succeeds is otherwise invisible — the names just
- * stay what they were. With nothing stored, groups are named from contacts and
- * then their bare id, with no `participantCount`.
- */
-const GROUP_TTL_MS = 5 * 60_000
+/** Shared, so keep it immutable. */
 const emptyGroups: Map<string, GroupInfo> = new Map()
-
-const groupCache = staleWhileRevalidate<Map<string, GroupInfo>>({
-  ttlMs: GROUP_TTL_MS,
-  // `undefined` here means "nothing stored and no scan to run" — another cheap
-  // table read later, not a WhatsApp retry. Those are governed by the table.
-  retryTtlMs: GROUP_TTL_MS,
-  empty: emptyGroups,
-  seed: instanceId => readStoredGroups(instanceId),
-})
-
-function groupsFor(instance: AppInstance, evolution: EvolutionClient): Promise<Map<string, GroupInfo>> {
-  return groupCache(instance.id, async () => {
-    if (!await claimGroupScan(instance.id)) return readStoredGroups(instance.id)
-
-    // `getParticipants` is required — Evolution answers 400 without it.
-    const rows = await evolution<EvolutionGroupRow[]>(
-      `/group/fetchAllGroups/${encodeURIComponent(instance.name)}?getParticipants=false`,
-      { timeout: GROUP_SCAN_TIMEOUT_MS },
-    ).catch((error: unknown) => {
-      console.warn(`[chats] group scan failed for connection ${instance.id}; next attempt in ${GROUP_SCAN_FAILURE_BACKOFF_MS / 60_000} min:`, error instanceof Error ? error.message : error)
-      return undefined
-    })
-
-    if (!Array.isArray(rows)) {
-      await recordGroupScanFailure(instance.id)
-      // Keep serving what is stored; `undefined` keeps whatever the cache holds.
-      return readStoredGroups(instance.id)
-    }
-
-    const byJid = new Map<string, GroupInfo>()
-    for (const row of rows) {
-      if (typeof row?.id !== 'string') continue
-      byJid.set(row.id, {
-        subject: row.subject?.trim() || undefined,
-        size: typeof row.size === 'number' ? row.size : undefined,
-        pictureUrl: row.pictureUrl ?? undefined,
-      })
-    }
-
-    // Records the scan and releases the lease. An empty map is a real answer —
-    // an account can be in no groups — and is stored as such.
-    await replaceStoredGroups(instance.id, byJid)
-
-    return byJid
-  })
-}
 
 // ── internals ──────────────────────────────────────────────────────────────
 
@@ -1145,10 +1075,11 @@ function groupsFor(instance: AppInstance, evolution: EvolutionClient): Promise<M
  * `pushName` is **not** the sender's push name, despite the key. Evolution 2.3.7
  * builds this row with a raw query that aliases two different columns as
  * `pushName` — a CASE over the contact and message names, and then `Chat.name` —
- * and the second silently wins when the row is deserialised. `Chat.name` is only
- * written from an inbound 1:1 message, and never for a group, so it is empty for
- * most rows. That upstream bug is why names are enriched above rather than read
- * from here.
+ * and the second silently wins when the row is deserialised. `Chat.name` is
+ * written when the row is inserted (a group's subject at that moment, never
+ * updated on a rename — see `whatsapp-groups.ts`) and afterwards only from an
+ * inbound 1:1 message's push name, so it is empty or stale for many rows. That
+ * upstream bug is why names are enriched above rather than read from here.
  */
 interface EvolutionChatRow {
   remoteJid?: string
@@ -1164,22 +1095,9 @@ interface EvolutionContactRow {
   profilePicUrl?: string
 }
 
-interface EvolutionGroupRow {
-  id?: string
-  subject?: string
-  size?: number
-  pictureUrl?: string
-}
-
 interface ContactInfo {
   name?: string
   profilePicUrl?: string
-}
-
-interface GroupInfo {
-  subject?: string
-  size?: number
-  pictureUrl?: string
 }
 
 /** `ProtocolMessage.Type.MESSAGE_EDIT` — the only subtype carrying readable content. */

@@ -61,9 +61,11 @@ A passkey is bound to a domain. The app takes that domain from
 
 ## Someone lost every factor
 
-There is no self-service reset and no admin reset. An operator with database
-access can turn 2FA off for one account; they can then sign in with their
-password and enrol again:
+There is no self-service reset and no admin reset for a second factor. A
+password reset doesn't help either: it changes the password only, and signing
+in afterwards still asks for the factor. An operator with database access can
+turn 2FA off for one account; they can then sign in with their password and
+enrol again:
 
 ```sql
 BEGIN;
@@ -80,7 +82,7 @@ turned on.
 
 | Table | Holds |
 |---|---|
-| `totp_credentials` | the authenticator secret (plain), the last step a code was accepted for, `confirmed_at` |
+| `totp_credentials` | the authenticator secret (plain), the last step a code was accepted for, `confirmed_at`; until confirmed, the session that started setup and the wrong-code count (15 minutes, 5 codes, then set up again) |
 | `webauthn_credentials` | credential id, public key, signature counter, transports, name, `last_used_at` |
 | `recovery_codes` | SHA-256 of each code, `used_at` |
 | `mfa_challenges` | pending sign-ins and passkey registrations, short-lived |

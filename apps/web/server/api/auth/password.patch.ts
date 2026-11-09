@@ -15,7 +15,7 @@ const body = z.object({
  *
  * Every *other* session this user has is ended, so a session someone opened with
  * the old password does not outlive it; the one making the change stays signed
- * in.
+ * in. The address is told, best effort, in case it was not them.
  *
  * This revokes **no connector tokens**, and that is correct rather than an
  * oversight. They are minted by this app, stored only as hashes in `mcp_tokens`,
@@ -30,6 +30,7 @@ export default defineEventHandler(async (event) => {
   await requireCurrentPassword(user, currentPassword)
   await setPassword(user.id, password)
   await endOtherSessions(event, user.id)
+  notifyPasswordChanged(user.email, 'profile')
 
   // `reauthenticated` stays in the response for the client, which used to have
   // to re-sign-in after a credential change. The session is untouched now.

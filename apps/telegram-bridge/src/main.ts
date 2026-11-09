@@ -1,7 +1,18 @@
 import { type BridgeConfig, loadConfig } from './config.ts'
 import { BRIDGE_SCHEMA, connect, ensureBridgeSchema, grantReader, migrate } from './db.ts'
 import { createBridgeServer } from './http.ts'
+import { describeError } from './http-error.ts'
 import { SessionManager } from './sessions.ts'
+
+// Defence in depth: every request path catches its own rejections; one that
+// slips through is logged and the process keeps serving. Exiting would drop
+// every tenant's Telegram connection over one failed operation, and nothing
+// it could leave behind needs a restart: session locks are re-verified every
+// 5 s on their own connection, and shutdown only ever disconnects. Thrown
+// (uncaught) exceptions stay fatal.
+process.on('unhandledRejection', (error) => {
+  console.error(`[bridge] unhandled rejection: ${describeError(error)}`)
+})
 
 let config: BridgeConfig
 try {

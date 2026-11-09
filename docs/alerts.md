@@ -130,3 +130,26 @@ Then read what was sent at <http://localhost:8025>. A failed send is logged by
 `[mailer]` with what to check. The sweep can be triggered
 by hand in development with `curl -X POST
 http://localhost:3000/_nitro/tasks/alerts:sweep`.
+
+## Account emails
+
+The same SMTP settings send the account emails: signup verification (with or
+without an invitation), "you already have an account", the code for an address
+change, the notice to the old address once it changes, invitations, password
+resets (asked for by the account's owner or sent by an admin), and the notice
+that a password was changed. Unlike
+the alerts, which are plain text, these are HTML with a plain-text alternative,
+written by the templates in `apps/web/server/emails/`.
+
+- The header logo is `/email/automata-email-logo.png` on the web app, linked
+  through `NUXT_PUBLIC_APP_URL`. Without that URL the header shows the name as
+  text, and the mails carry the code but no links.
+- The footer says why the mail was sent. On the hosted service it also carries
+  the company's postal address, and the address-change and password-changed
+  notices offer "Contact us"; a self-hosted deployment sends neither, and tells the reader to contact
+  an admin of their organization instead.
+- The sender is `NUXT_MAIL_FROM` / `NUXT_MAIL_FROM_NAME` for every mail,
+  invitations included.
+
+`apps/web/test/__snapshots__/emails/` holds a rendered copy of each; open the
+`.html` files in a browser to see them.

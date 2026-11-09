@@ -21,6 +21,16 @@ import { applyPlanEntitlements, recordPlanChanges, writeEntitlementDefaults } fr
 const OUTBOX_INTERVAL_MS = 15_000
 const RECONCILE_INTERVAL_MS = 60 * 60 * 1000
 
+// Defence in depth: every request path catches its own rejections; one that
+// slips through is logged and the process keeps serving. Exiting would stop
+// the Stripe webhook, the outbox consumers and the Billing page for one failed
+// operation, and every write here is idempotent and re-driven by reconcile.
+// Failures that must restart the process (startWork) exit explicitly; thrown
+// (uncaught) exceptions stay fatal.
+process.on('unhandledRejection', (error) => {
+  console.error(`[cloud] unhandled rejection: ${describeError(error)}`)
+})
+
 let config: CloudConfig
 try {
   config = loadConfig()

@@ -26,6 +26,18 @@ Self-hosted deployments never run the cloud service.
 | Users | 1 | 5 included, $10/user/month after |
 | Requests | unlimited | unlimited |
 | Telemetry | always on, stored 30 days | optional, off by default |
+| WhatsApp history at pairing | recent only | recent, or full if chosen |
+
+**WhatsApp history.** Every new WhatsApp connection imports the recent history
+by default: what WhatsApp hands any linked browser, rather than everything the
+phone holds. Live messages from then on are all kept. **Import full history**
+on the create form asks for everything instead. A full import is most of the
+disk an account costs, so on Free that box is locked with an Upgrade link, and
+the server refuses it (402 `plan_limit`). The lock applies only to connections on
+the deployment's own Evolution server, never to a bring-your-own one, and it
+deletes nothing: history already imported stays when an organization moves to
+Free, and moving to Pro imports nothing by itself. An admin who upgrades presses
+**Import full history** on the connection's dashboard, which costs a QR scan. See [WhatsApp history](whatsapp.md#recent-history-only).
 
 The numbers are set in three places:
 
@@ -81,6 +93,7 @@ The plan and its limits are kept apart:
 - **Plan:** Stripe status, decided by the billing code.
 - **Limits:** three plain numbers on each organization, `max_connections`, `max_tokens` and `max_members`. NULL means unlimited.
 - **Required telemetry:** one flag on each organization, `tool_calls_required`. While it is true, every MCP tool call and the reason Claude gave for it are recorded and the organization can't turn that off. It's true on Free and false on Pro. See "Telemetry" in [using-automata.md](using-automata.md).
+- **Recent WhatsApp history only:** one more flag, `recent_history_only`. While it is true, the organization's WhatsApp connections on this deployment's Evolution server can't import full history (see above). It's true on Free and false on Pro.
 
 The cloud service writes those values whenever a subscription changes, and for every organization each time it starts. The web app's checks only ever read them, so they keep working, from the database, even while the cloud service is down.
 
@@ -89,7 +102,7 @@ A new organization gets the limits in `app.entitlement_defaults`, which the clou
 Unsetting `NUXT_CLOUD_URL` stops new limits from being written. It does **not** clear limits already written. A deployment that switches the hosted offering off after using it should clear them:
 
 ```sql
-UPDATE app.organizations SET max_connections = NULL, max_tokens = NULL, max_members = NULL, plan_label = NULL, tool_calls_required = false;
+UPDATE app.organizations SET max_connections = NULL, max_tokens = NULL, max_members = NULL, plan_label = NULL, tool_calls_required = false, recent_history_only = false;
 ```
 
 ## Account events
@@ -297,7 +310,7 @@ Railway injects `PORT=8080` into every service, and the cloud service follows it
 
 Before the cloud service existed, the web app talked to Stripe itself, configured with `NUXT_BILLING` and `NUXT_STRIPE_*`. To move over:
 
-1. Deploy the cloud service (step 6). It writes `app.entitlement_defaults` and re-derives every organization's limits as soon as the web app's migration `0013_mcp_tool_calls` has run.
+1. Deploy the cloud service (step 6). It writes `app.entitlement_defaults` and re-derives every organization's limits as soon as the web app's migration `0022_recent_history_only` has run.
 2. On the web service, set `NUXT_CLOUD_URL` and `NUXT_CLOUD_ADMIN_KEY`, and remove `NUXT_BILLING` and the four `NUXT_STRIPE_*` variables.
 3. In Stripe, change the webhook destination's URL from `https://<web app>/api/webhook/stripe` to `https://<cloud service>/webhooks/stripe`. The signing secret stays the same.
 

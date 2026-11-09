@@ -9,10 +9,11 @@ export type OrgRole = 'admin' | 'member'
 export interface SessionMembership {
   role: OrgRole
   /**
-   * `plan` (a display name such as "Free" or "Pro (trial)"), `limited` and
-   * `overLimit` are present only on the hosted deployment; see usePlan().
+   * `plan` (a display name such as "Free" or "Pro (trial)"), `limited`,
+   * `overLimit` and `recentHistoryOnly` are present only on the hosted
+   * deployment; see usePlan().
    */
-  org: { id: string, name: string, plan?: string, limited?: boolean, overLimit?: boolean }
+  org: { id: string, name: string, plan?: string, limited?: boolean, overLimit?: boolean, recentHistoryOnly?: boolean }
 }
 
 interface MeResponse {

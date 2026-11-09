@@ -247,6 +247,52 @@ export async function consumeTotpCode(db: Db, userId: string, code: string, conf
   return Boolean(spent)
 }
 
+/**
+ * How long an unconfirmed authenticator secret can be confirmed, and with how
+ * many wrong codes. `totp/setup` checks the password; `totp/confirm` asks only
+ * for a session, so the pending secret carries that check forward and must not
+ * outlive it: without these, a stolen session guesses codes against a setup
+ * its owner abandoned, unhurried and uncounted, and turns 2FA on with a secret
+ * the owner does not have.
+ */
+export const TOTP_SETUP_TTL_MINUTES = 15
+export const MAX_TOTP_SETUP_ATTEMPTS = 5
+
+/**
+ * Spend one attempt at confirming this user's pending authenticator, before the
+ * code is checked, like `claimLoginAttempt`. Only the session that ran setup,
+ * within `TOTP_SETUP_TTL_MINUTES`, while attempts remain. Returns which attempt
+ * this is, or `undefined` when there is nothing this session may confirm — and
+ * then a pending secret that is expired or out of attempts is deleted, so it
+ * does not linger. One from another, live session is left alone: deleting it
+ * would let any session cancel the owner's setup.
+ */
+export async function claimTotpSetupAttempt(tx: Db, userId: string, sessionHash: string | undefined): Promise<number | undefined> {
+  const [row] = await tx<{ attempts: number }[]>`
+    UPDATE app.totp_credentials SET attempts = attempts + 1
+    WHERE user_id = ${userId}
+      AND confirmed_at IS NULL
+      AND attempts < ${MAX_TOTP_SETUP_ATTEMPTS}
+      AND created > now() - make_interval(mins => ${TOTP_SETUP_TTL_MINUTES})
+      AND setup_session = (
+        SELECT id FROM app.sessions
+        WHERE token_hash = ${sessionHash ?? ''} AND user_id = ${userId} AND expires_at > now()
+      )
+    RETURNING attempts
+  `
+  if (row) return row.attempts
+
+  await tx`
+    DELETE FROM app.totp_credentials
+    WHERE user_id = ${userId} AND confirmed_at IS NULL
+      AND (attempts >= ${MAX_TOTP_SETUP_ATTEMPTS}
+        OR created <= now() - make_interval(mins => ${TOTP_SETUP_TTL_MINUTES})
+        OR setup_session IS NULL)
+  `
+  console.warn(`[mfa] authenticator setup for user ${userId} is unknown, expired, out of attempts or from another session`)
+  return undefined
+}
+
 // ── recovery codes ─────────────────────────────────────────────────────────
 
 /** Lower-case, no separators: what is hashed and what a typed code becomes. */
@@ -355,9 +401,25 @@ export function claimAuthAttempt(key: string): number {
 
 /** The attempt claimed at `at` succeeded: it no longer counts against the account. */
 export function forgiveAuthAttempt(key: string, at: number): void {
-  const recent = failures.get(key)
-  const index = recent?.indexOf(at) ?? -1
-  if (index < 0) return
-  recent!.splice(index, 1)
-  if (!recent!.length) failures.delete(key)
+  dropAttempt(failures, key, at)
+}
+
+/**
+ * Run `check` under an attempt claimed on `key` first, so a concurrent burst
+ * counts. The attempt stays counted only when `isWrong` says the answer was
+ * wrong; a right answer hands it back, and so does a throw — an outage (503) is
+ * not a wrong guess.
+ */
+export async function withAuthAttempt<T>(key: string, check: () => Promise<T>, isWrong: (result: T) => boolean): Promise<T> {
+  const claimedAt = claimAuthAttempt(key)
+  let result: T
+  try {
+    result = await check()
+  }
+  catch (cause) {
+    forgiveAuthAttempt(key, claimedAt)
+    throw cause
+  }
+  if (!isWrong(result)) forgiveAuthAttempt(key, claimedAt)
+  return result
 }

@@ -41,6 +41,12 @@ export function clearSessionCookie(event: H3Event): void {
   setCookie(event, SESSION_COOKIE, '', { ...authCookieOptions(), maxAge: 0 })
 }
 
+/** The stored hash of this request's session cookie, if it carries one. */
+export function currentSessionHash(event: H3Event): string | undefined {
+  const token = getCookie(event, SESSION_COOKIE)
+  return token ? hashSessionToken(token) : undefined
+}
+
 /** Start a session for this user and set its cookie. */
 export async function startSession(event: H3Event, userId: string): Promise<void> {
   const sql = await appDb()
@@ -72,11 +78,10 @@ export async function endSession(event: H3Event): Promise<void> {
  * session someone else opened with the old password does not outlive it.
  */
 export async function endOtherSessions(event: H3Event, userId: string): Promise<void> {
-  const token = getCookie(event, SESSION_COOKIE)
   const sql = await appDb()
   await sql`
     DELETE FROM app.sessions
-    WHERE user_id = ${userId} AND token_hash <> ${token ? hashSessionToken(token) : ''}
+    WHERE user_id = ${userId} AND token_hash <> ${currentSessionHash(event) ?? ''}
   `
 }
 

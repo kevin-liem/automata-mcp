@@ -25,6 +25,8 @@ const body = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('whatsapp').default('whatsapp'),
     label: z.string().max(100).optional(),
+    // Off by default, for everyone: recent history only unless asked for.
+    fullHistory: z.boolean().default(false),
     server: z.object({
       baseUrl: z.string().url(),
       adminKey: z.string().min(1),
@@ -80,7 +82,7 @@ export default defineEventHandler(async (event) => {
       instance = await provisionPostgresInstance(actor, { label: parsed.label, dsn: parsed.dsn })
       break
     case 'whatsapp':
-      instance = await provisionWhatsappInstance(actor, { label: parsed.label, server: parsed.server })
+      instance = await provisionWhatsappInstance(actor, { label: parsed.label, server: parsed.server, fullHistory: parsed.fullHistory })
       break
     case 'telegram':
       instance = await provisionTelegramInstance(actor, { label: parsed.label, server: parsed.server })

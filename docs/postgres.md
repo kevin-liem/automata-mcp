@@ -38,6 +38,10 @@ What the checks do enforce, on every statement:
 - **Only tables in scope.** Read off `EXPLAIN (FORMAT JSON, VERBOSE)` — never
   `EXPLAIN ANALYZE`, which would execute it — inside the same transaction as the
   statement, so a view cannot be repointed between the check and the run.
+  System catalogs stay readable (they describe schema), except the few that
+  hold data: a token scoped to specific tables cannot read column statistics
+  (`pg_stats`, `pg_stats_ext`), large objects, user mappings or
+  `pg_stat_activity`'s query text.
 - **No functions that reach outside the query.** Calls are resolved against
   `pg_proc` from both the statement text and the plan. Anything outside
   `pg_catalog`, anything `SECURITY DEFINER`, and a denylist of builtins such as

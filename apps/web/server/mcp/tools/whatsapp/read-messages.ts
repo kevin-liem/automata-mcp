@@ -34,6 +34,10 @@ export default defineKindTool({
     + 'Takes the `jid` returned by list-chats. Covers the history imported when '
     + 'the account was paired as well as everything since, so older '
     + 'conversations are reachable — use `since`/`until` to target a date range. '
+    + 'When the response carries `recentHistoryOnly: true`, that import was '
+    + 'partial — only the recent history WhatsApp hands a newly linked device — '
+    + 'so the oldest message here is not necessarily where the conversation '
+    + 'began; say so rather than treating it as the start. '
     + 'A response is one page, not the whole range: when `hasMore` is true there '
     + 'are older messages you have not seen, so call again with `nextPage` and '
     + 'the same `jid`, `limit` and `window` bounds, and keep going until '
@@ -111,9 +115,10 @@ export default defineKindTool({
     // `includeReactions` is passed alongside `range` rather than folded into it:
     // `range` is echoed back to the caller as `window`, and it should describe
     // the time bounds and nothing else.
-    const { messages, hasMore, total, protocolMessagesExcluded } = await listMessages(
-      instance, chat.jids, { limit, page, ...range, includeReactions },
-    )
+    const [{ messages, hasMore, total, protocolMessagesExcluded }, partialHistory] = await Promise.all([
+      listMessages(instance, chat.jids, { limit, page, ...range, includeReactions }),
+      recentHistoryOnly(instance),
+    ])
 
     const identity = linkStatus(jid, chat, links)
 
@@ -129,6 +134,9 @@ export default defineKindTool({
         : undefined,
       protocolMessagesExcluded > 0 ? droppedNote(protocolMessagesExcluded) : undefined,
       identity.note,
+      // Only once the caller has reached the oldest stored message, which is
+      // where it would otherwise conclude the conversation began.
+      partialHistory && !hasMore ? RECENT_HISTORY_NOTE : undefined,
     ].filter((note): note is string => Boolean(note))
 
     return {
@@ -156,6 +164,10 @@ export default defineKindTool({
       // taken over the whole range, while this describes one page — patching it
       // here would produce a confidently wrong number across pages.
       ...(protocolMessagesExcluded > 0 && { protocolMessagesExcluded }),
+      // On every page, not just the last: a caller reading a `since` window
+      // needs to know before it pages that the window may predate the import.
+      // Omitted when false or unknown, so its presence always means a gap.
+      ...(partialHistory && { recentHistoryOnly: true }),
       ...(notes.length > 0 && { note: notes.join(' ') }),
       // Same principle as `hasMore`, for a different kind of gap: a whole class
       // of message is missing, and a caller that does not know it was dropped

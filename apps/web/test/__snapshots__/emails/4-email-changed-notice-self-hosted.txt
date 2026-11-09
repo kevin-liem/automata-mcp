@@ -1,0 +1,21 @@
+Subject: Your Automata email address was changed
+Preview: If this wasn’t you, contact an admin of your organization right away.
+
+SECURITY NOTICE
+
+Your email address was changed.
+
+The email on your Automata account is no longer this address. Sign-in, invitations and connection alerts now go to the new one.
+
+From: old@example.com
+To: ne•••@example.com
+When: 7 Nov 2026, 22:02 UTC
+
+If you made this change, there’s nothing to do.
+
+---
+
+Didn’t make this change? Someone may have access to your account. Contact an admin of your organization right away.
+
+--
+You’re getting this security notice because this address was on an Automata account until 7 Nov 2026. We won’t send anything else here.

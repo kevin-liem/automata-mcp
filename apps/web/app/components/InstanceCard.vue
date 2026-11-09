@@ -74,7 +74,7 @@ const secondary = computed(() => {
         <p v-if="layout === 'target'" class="truncate text-sm text-muted-foreground">
           {{ instance.detail || (instance.kind === 'imap' ? 'IMAP mailbox' : 'PostgreSQL') }}
         </p>
-        <p v-else class="text-sm text-muted-foreground tabular-nums">
+        <p v-else-if="instance.stats" class="text-sm text-muted-foreground tabular-nums">
           {{ instance.stats?.messages ?? 0 }} messages · {{ instance.stats?.chats ?? 0 }} chats
         </p>
       </CardContent>

@@ -224,6 +224,12 @@ export interface OrgLimits {
   max_connections?: number
   max_tokens?: number
   max_members?: number
+  /**
+   * WhatsApp connections on the deployment's own Evolution server import only
+   * the recent history WhatsApp sends any linked device, never the full one.
+   * `false` (the column default) is no restriction. See `whatsappHistoryLimited`.
+   */
+  recent_history_only?: boolean
 }
 
 export type OrgRole = 'admin' | 'member'

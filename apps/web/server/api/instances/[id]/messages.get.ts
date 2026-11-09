@@ -37,7 +37,9 @@ export default defineEventHandler(async (event) => {
 
   // Split the way the search tools split, so one box behaves the same wherever
   // it appears: every word has to be in the message, in any order.
-  const terms = params.q?.trim().split(/\s+/).filter(Boolean)
+  // Bounded the same way too: these terms run on the pool every account on our
+  // own server shares (`search-terms.ts`).
+  const terms = params.q === undefined ? undefined : splitSearchTerms(params.q.trim(), 'q')
 
   switch (kind) {
     case 'whatsapp':

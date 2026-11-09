@@ -15,8 +15,12 @@ const props = defineProps<{
   id: string
   kind: Extract<InstanceKind, 'whatsapp' | 'telegram'>
   profile: { name: string, detail: string, picUrl?: string }
-  /** `contacts` is absent for a kind that keeps none, and then so is its card. */
-  stats: { messages: number, chats: number, contacts?: number }
+  /**
+   * Absent when the counts could not be measured in time; the cards then show a
+   * dash rather than a 0 that reads as an empty account. `contacts` is absent
+   * for a kind that keeps none.
+   */
+  stats?: { messages: number, chats: number, contacts?: number }
   /**
    * Messages is clickable only where the table behind it can answer. Reading
    * goes to the backend's own database, and a connection that has not been
@@ -38,7 +42,17 @@ const fallbackIcon = computed<Component>(() => {
   }
 })
 
-const hasContacts = computed(() => props.stats.contacts !== undefined)
+/** From the kind, not from `stats`: missing counts must not remove the card. */
+const hasContacts = computed(() => {
+  switch (props.kind) {
+    case 'whatsapp':
+      return true
+    case 'telegram':
+      return false
+    default:
+      return assertNever(props.kind, 'connection kind')
+  }
+})
 
 const chatsOpen = ref(false)
 const messagesOpen = ref(false)
@@ -74,14 +88,14 @@ const contactsOpen = ref(false)
 
     <StatCard
       label="Messages"
-      :value="stats.messages"
+      :value="stats?.messages"
       :icon="MessageSquareTextIcon"
       :clickable="canReadMessages"
       @click="messagesOpen = true"
     />
     <StatCard
       label="Chats"
-      :value="stats.chats"
+      :value="stats?.chats"
       :icon="MessagesSquareIcon"
       clickable
       @click="chatsOpen = true"
@@ -89,7 +103,7 @@ const contactsOpen = ref(false)
     <StatCard
       v-if="hasContacts"
       label="Contacts"
-      :value="stats.contacts ?? 0"
+      :value="stats?.contacts"
       :icon="BookUserIcon"
       clickable
       @click="contactsOpen = true"
@@ -100,14 +114,14 @@ const contactsOpen = ref(false)
     v-model:open="chatsOpen"
     :instance-id="id"
     :kind="kind"
-    :total="stats.chats"
+    :total="stats?.chats"
   />
 
   <MessagesDialog
     v-model:open="messagesOpen"
     :instance-id="id"
     :kind="kind"
-    :total="stats.messages"
+    :total="stats?.messages"
   />
 
   <ContactsDialog

@@ -64,10 +64,20 @@ async function startTotp() {
 }
 
 async function confirmTotp() {
-  const result = await run(() => $fetch<{ recoveryCodes?: string[] }>('/api/auth/mfa/totp/confirm', {
-    method: 'POST',
-    body: { code: setupCode.value.trim() },
-  }), { success: 'Authenticator app added.', failure: 'Could not confirm the code' })
+  const result = await run(async () => {
+    try {
+      return await $fetch<{ recoveryCodes?: string[] }>('/api/auth/mfa/totp/confirm', {
+        method: 'POST',
+        body: { code: setupCode.value.trim() },
+      })
+    }
+    catch (error) {
+      // The pending secret is gone (expired, out of tries, or another browser's):
+      // this QR code can never be confirmed, so put the Set up button back.
+      if (errorDetails(error).code === 'totp_setup_expired') setup.value = undefined
+      throw error
+    }
+  }, { success: 'Authenticator app added.', failure: 'Could not confirm the code' })
   if (!result) return
   setup.value = undefined
   password.value = ''

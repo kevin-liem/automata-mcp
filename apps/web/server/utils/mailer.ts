@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
+import type { EmailBrand } from '../emails/layout'
 
 /**
  * Outbound email, over SMTP from this process.
@@ -12,6 +13,11 @@ import type { Transporter } from 'nodemailer'
  *
  * `NUXT_SMTP_TLS=true` is implicit TLS (port 465). False sends STARTTLS when the
  * server offers it, which is what port 587 wants.
+ *
+ * Account emails (verification, already registered, email-change notice,
+ * invitation, password reset, password-changed notice) are HTML with a
+ * plain-text alternative, written by the templates in `server/emails/`.
+ * Connection alerts are still plain text.
  */
 
 export interface AppEmail {
@@ -41,6 +47,17 @@ function mailTransport(): Transporter | undefined {
     auth: config.smtpUsername ? { user: config.smtpUsername, pass: config.smtpPassword } : undefined,
   })
   return transport
+}
+
+/**
+ * What the account-email templates need to know about this deployment. The
+ * logo and any link built here need `NUXT_PUBLIC_APP_URL`; without it the
+ * header shows the wordmark as text. The company address and "contact us"
+ * appear in hosted mode only — a self-hosted install's users are not ours.
+ */
+export function emailBrand(): EmailBrand {
+  const appUrl = String(useRuntimeConfig().public.appUrl ?? '').trim().replace(/\/+$/, '')
+  return { appUrl: appUrl || undefined, hosted: hostedMode() }
 }
 
 /**

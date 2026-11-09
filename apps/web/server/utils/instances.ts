@@ -45,7 +45,12 @@ export type InstanceStatus = {
   number?: string
   ownerJid?: string
   disconnectedAt?: string
-  stats: {
+  /**
+   * Absent when the counts could not be measured in time (a count that hit the
+   * statement timeout with nothing cached, or Evolution unreachable). Absent is
+   * never zero: the dashboard shows it as unavailable. See `cachedSqlCounts`.
+   */
+  stats?: {
     messages: number
     chats: number
     contacts: number
@@ -195,6 +200,13 @@ export interface WhatsappProvisionInput {
    * to Evolution's database and this app would not know which one.
    */
   server?: { baseUrl: string, adminKey: string, dbUrl?: string }
+  /**
+   * Ask WhatsApp for the account's full history at pairing, rather than the
+   * recent slice it hands any linked device. The owner's choice on the create
+   * form, off by default — a full import is most of the disk an account costs.
+   * Refused (402) on our server for an organization limited to recent history.
+   */
+  fullHistory?: boolean
 }
 
 export async function provisionWhatsappInstance(
@@ -202,6 +214,14 @@ export async function provisionWhatsappInstance(
   input: WhatsappProvisionInput = {},
 ): Promise<AppInstance> {
   const { label, server } = input
+  const fullHistory = input.fullHistory === true
+
+  // First, before any setup check or remote call: a plan refusal is the answer
+  // whatever else is wrong. A user's own server is their disk, so the plan's
+  // history limit never applies there.
+  if (fullHistory && !server && await orgRecentHistoryOnly(await appDb(), actor.org.id)) {
+    throw fullHistoryLimitError()
+  }
 
   // Refused on the hosted service before the address is even resolved; then
   // guarded before the first request rather than only inside the client, so a
@@ -232,6 +252,7 @@ export async function provisionWhatsappInstance(
   const admin = createEvolutionClient(creds)
   const name = generateInstanceName()
 
+
   const created = await admin<{ instance?: { instanceId?: string }, hash?: string | { apikey?: string } }>(
     '/instance/create',
     {
@@ -247,7 +268,13 @@ export async function provisionWhatsappInstance(
         // that fetches history later. Side effect worth knowing: Evolution's
         // `shouldIgnoreJid` stops filtering `@g.us` when this is on, so group
         // chats sync too, regardless of `groupsIgnore`.
-        syncFullHistory: true,
+        //
+        // Off unless the owner ticked "Import full history" when creating it:
+        // Baileys then sends `requireFullSync: false`, and WhatsApp hands over
+        // only the recent slice it gives any linked browser — still imported,
+        // since Evolution persists every history sync type under
+        // SAVE_DATA.HISTORIC.
+        syncFullHistory: fullHistory,
       },
     },
   )
@@ -486,7 +513,7 @@ export async function updatePostgresDsn(instance: AppInstance, dsn: string): Pro
   const updated = await updateRow<AppInstance>('instances', instance.id, fields)
 
   // Drop the pool so the change takes effect now rather than at the next
-  // fingerprint check. Belt and braces — `pgFor` would notice on its own.
+  // fingerprint check. Belt and braces — `withPg` would notice on its own.
   await closeSqlPool(instance)
 
   return updated
@@ -633,14 +660,17 @@ export async function getImapHealth(instance: AppInstance): Promise<ConnectionHe
  * Without a message database — a bring-your-own server with no database URL —
  * or when that SQL fails, `fetchInstances` is still asked, but cached per
  * connection (`cachedApiRow`). That is the only path on which the row can be
- * stale; see there.
+ * stale; see there. One SQL failure never takes that path: a count that is
+ * merely slow (statement timeout, or the account's slot busy) answers with the
+ * last counts or none — swapping one account's slow count for a scan of every
+ * account is the wrong trade (#156).
  */
 export async function getInstanceStatus(
   instance: AppInstance,
   options: { freshCounts?: boolean } = {},
 ): Promise<InstanceStatus> {
   const { rowChurn: _churn, ...status } = await readStatus(instance, { counts: true, freshCounts: options.freshCounts })
-  return { ...status, stats: status.stats ?? zeroStats() }
+  return status
 }
 
 export type InstanceHealth = Omit<InstanceStatus, 'stats'> & {
@@ -797,11 +827,11 @@ export async function pairingEvidence(instance: AppInstance): Promise<'paired' |
   }
 
   // Stored history outlives a logout. Without a message database there is
-  // nothing to count, and `paired_at` plus the reads above have to do.
+  // nothing to ask, and `paired_at` plus the reads above have to do. Whether a
+  // message exists, not how many: one index probe rather than a count (#156).
   if (canAskSql) {
     try {
-      const { messages } = await countInstanceRows(instance)
-      if (messages > 0) {
+      if (await hasInstanceMessages(instance)) {
         await storePaired(instance)
         return 'paired'
       }
@@ -897,10 +927,11 @@ function nextChurn(stored: RowChurn, read: { columnOpen: boolean, rowWrittenAt?:
 export function forgetInstanceStatus(instanceId: string): void {
   apiRowCache.delete(instanceId)
   countsCache.delete(instanceId)
+  historySettingCache.delete(instanceId)
   holdRefreshedAt.delete(instanceId)
 }
 
-type InstanceStats = InstanceStatus['stats']
+type InstanceStats = NonNullable<InstanceStatus['stats']>
 
 async function readStatus(
   instance: AppInstance,
@@ -910,7 +941,7 @@ async function readStatus(
   const viaSql = canReadMessages(instance)
   const storedChurn: RowChurn = { since: instance.row_churn_since, seenAt: instance.row_churn_seen_at }
 
-  const [live, record, rowWrittenAt, sqlStats] = await Promise.all([
+  const [live, record, rowWrittenAt, sqlCounts] = await Promise.all([
     liveConnectionState(evolution, instance).catch(() => undefined),
     viaSql ? sqlInstanceRecord(instance) : undefined,
     viaSql ? sqlRowWrittenAt(instance) : undefined,
@@ -918,8 +949,11 @@ async function readStatus(
   ])
 
   let row: EvolutionInstanceRecord | undefined = record
-  let stats = sqlStats
-  if (!row || (options.counts && !stats)) {
+  let stats = sqlCounts?.stats
+  // No SQL counts at all (no message database, counts not asked for) or a
+  // failed count that `fetchInstances` may stand in for. A slow count may not.
+  const countsFromApi = options.counts && !stats && (sqlCounts?.fallback ?? true)
+  if (!row || countsFromApi) {
     const api = await cachedApiRow(instance, evolution, live, Boolean(options.freshCounts))
     row ??= api
     if (options.counts) stats ??= api && statsFromApiRow(api)
@@ -1008,19 +1042,34 @@ async function sqlRowWrittenAt(instance: AppInstance): Promise<string | undefine
 }
 
 /**
- * Per-account counts, cached for `COUNTS_TTL_MS`; `undefined` means "use the
- * fallback". Concurrent callers share one query, as `contactDirectory()` does.
+ * Per-account counts, cached for `COUNTS_TTL_MS`. Concurrent callers share one
+ * query, as `contactDirectory()` does. `fallback` says whether `readStatus` may
+ * ask `fetchInstances` for counts this could not give.
  *
  * A failed recount serves the previous value if there is one — counts that are
  * a few minutes old are still right enough for a dashboard, and falling back to
  * `fetchInstances` is the expensive thing this exists to avoid. Failures are not
  * cached, so the next read retries.
+ *
+ * **A slow count never falls back** (#156): the statement timeout, or this
+ * account's slot already busy (`sharedPoolFor`'s 429). `fetchInstances` counts
+ * every account's rows to answer for one, so a count too slow for one account
+ * would become a scan of all of them — on the first read after every deploy,
+ * when nothing is cached yet. It answers with the cached counts, or none, which
+ * the dashboard shows as unavailable. Fallback stays for what it exists for: a
+ * missing grant (42501) and a database that cannot be reached.
+ *
+ * A `fresh` read (the import screen) gets no stale counts on a slow count: a
+ * repeated old total reads to it as "the import stopped moving".
  */
-async function cachedSqlCounts(instance: AppInstance, fresh: boolean): Promise<InstanceStats | undefined> {
+async function cachedSqlCounts(
+  instance: AppInstance,
+  fresh: boolean,
+): Promise<{ stats?: InstanceStats, fallback: boolean }> {
   const cached = countsCache.get(instance.id)
   const maxAge = fresh ? FRESH_FLOOR_MS : COUNTS_TTL_MS
-  if (cached && Date.now() - cached.at < maxAge) return cached.stats
-  if (sqlDenied('counts', instance)) return undefined
+  if (cached && Date.now() - cached.at < maxAge) return { stats: cached.stats, fallback: false }
+  if (sqlDenied('counts', instance)) return { fallback: true }
 
   let counting = countsInFlight.get(instance.id)
   if (!counting) {
@@ -1034,12 +1083,29 @@ async function cachedSqlCounts(instance: AppInstance, fresh: boolean): Promise<I
   }
 
   try {
-    return await counting
+    return { stats: await counting, fallback: false }
   }
   catch (error) {
+    if (isSlowCount(error)) {
+      // Its own key, so a slow count's quiet window cannot hide a broken read's log.
+      noteSqlFallback('slow counts', instance, error, slowCountWording(instance))
+      return { stats: fresh ? undefined : cached?.stats, fallback: false }
+    }
     noteSqlFallback('counts', instance, error)
-    return cached?.stats
+    return { stats: cached?.stats, fallback: true }
   }
+}
+
+/** A count that ran out of time, or never got a turn — not a broken read. */
+function isSlowCount(error: unknown): boolean {
+  return isStatementTimeout(error) || (error as { statusCode?: unknown } | undefined)?.statusCode === 429
+}
+
+/** Said once per five minutes like the others; no grant is involved. */
+function slowCountWording(instance: AppInstance): SqlFallbackWording {
+  const failed = `[instances] counting messages for connection ${instance.id} was too slow; `
+    + 'serving the last counts (or none), not falling back to fetchInstances:'
+  return { denied: failed, failed }
 }
 
 /**
@@ -1350,6 +1416,11 @@ export async function getInstanceQr(instance: AppInstance): Promise<{ state: Con
   if (before === 'connecting') await extendConnectHold(instance)
   else if (!(await claimConnect(instance))) return { state: 'close' }
 
+  // Last, right before `connect`: in `close` it builds the socket that pairs,
+  // and the history setting reaches Baileys only when a socket is built. After
+  // the hold above, so a poll that will not connect costs nothing more.
+  await applyHistoryLimitBeforePairing(instance)
+
   const response = await evolution<Record<string, any>>(
     `/instance/connect/${encodeURIComponent(instance.name)}`,
   )
@@ -1411,6 +1482,9 @@ export async function logoutInstance(instance: AppInstance): Promise<void> {
  * Callers must confirm with the user first. This disconnects the account.
  */
 export async function enableFullHistorySync(instance: AppInstance): Promise<void> {
+  // Before anything changes: refused, the account stays linked.
+  if (await whatsappHistoryLimited(instance)) throw fullHistoryLimitError()
+
   const evolution = evolutionClientForInstance(instance)
   const name = encodeURIComponent(instance.name)
 
@@ -1428,6 +1502,7 @@ export async function enableFullHistorySync(instance: AppInstance): Promise<void
     method: 'POST',
     body: settingsBody(current, { syncFullHistory: true }),
   })
+  historySettingCache.delete(instance.id)
 
   // The new setting only reaches Baileys when the socket is next constructed, and
   // that only counts as a fresh device link — the thing that triggers a history
@@ -1516,6 +1591,132 @@ export async function deleteInstance(
     if (options.event) await recordHostedEvent(tx, options.event)
   })
 }
+
+/**
+ * Whether this WhatsApp connection may import only recent history: its
+ * organization is limited to that (`recent_history_only`, which the cloud
+ * service sets for Free) **and** it lives on the deployment's own Evolution
+ * server. A bring-your-own server stores history on the user's disk, which is
+ * what the limit is about, so it never applies there.
+ *
+ * The one place the rule lives for an existing connection — the full-history
+ * import and pairing ask here. Creating one asks the same question before the
+ * row exists, in `provisionWhatsappInstance`: no `server` there is exactly
+ * `onDeploymentServer` here.
+ */
+export async function whatsappHistoryLimited(instance: AppInstance): Promise<boolean> {
+  if (!onDeploymentServer(instance)) return false
+  return await orgRecentHistoryOnly(await appDb(), instance.org)
+}
+
+/**
+ * When each connection's history setting was last checked before pairing. The
+ * QR poll runs every two seconds; one check a minute is enough, since the
+ * setting matters only at the moment a socket is built.
+ */
+const historyLimitChecked = new Map<string, number>()
+const HISTORY_LIMIT_CHECK_MS = 60_000
+
+/**
+ * Turn `syncFullHistory` off before a limited connection pairs.
+ *
+ * A connection created under a limit already has it off. This covers the one
+ * created with it on — by an organization that was unlimited then (a lapsed
+ * Pro), or before the limit existed — which would otherwise import the full
+ * history at its next pairing. One-directional on purpose: lifting the limit
+ * turns nothing on. Full history then arrives only through "Import full
+ * history", which the owner chooses because it costs a QR scan.
+ *
+ * Errors propagate, so the poll fails rather than pair with the setting unknown.
+ */
+async function applyHistoryLimitBeforePairing(instance: AppInstance): Promise<void> {
+  const now = Date.now()
+  const checked = historyLimitChecked.get(instance.id)
+  if (checked && now - checked < HISTORY_LIMIT_CHECK_MS) return
+
+  if (await whatsappHistoryLimited(instance)) {
+    const evolution = evolutionClientForInstance(instance)
+    const name = encodeURIComponent(instance.name)
+    // Read-modify-write, for the reasons `enableFullHistorySync` gives.
+    const current = await evolution<EvolutionSettings | null>(`/settings/find/${name}`)
+    if (current?.syncFullHistory) {
+      await evolution(`/settings/set/${name}`, {
+        method: 'POST',
+        body: settingsBody(current, { syncFullHistory: false }),
+      })
+      historySettingCache.delete(instance.id)
+      console.info(`[instances] ${instance.id} (${instance.name}): full-history sync turned off before pairing — the organization imports recent history only`)
+    }
+  }
+
+  // Bounded by sweeping old entries rather than by connection count: a
+  // pairing that ended long ago has nothing left to check.
+  for (const [id, at] of historyLimitChecked) {
+    if (now - at >= HISTORY_LIMIT_CHECK_MS) historyLimitChecked.delete(id)
+  }
+  historyLimitChecked.set(instance.id, now)
+}
+
+/**
+ * Whether this account's history was imported only in part: its Evolution
+ * settings carry `syncFullHistory: false`, so its pairing asked WhatsApp for
+ * the recent slice only. `undefined` when the settings could not be read —
+ * callers then say nothing either way rather than guess.
+ *
+ * Read off the connection rather than the plan on purpose. The setting is what
+ * the pairing actually used: an organization that upgraded but has not
+ * re-imported still holds only recent history, and one that lapsed keeps the
+ * full history it imported. Both stay true here because nothing changes the
+ * setting except a pairing-bound step — `enableFullHistorySync` (which logs
+ * out) and `applyHistoryLimitBeforePairing`. One looseness, in the safe
+ * direction: a connection that imported in full and was then re-paired under
+ * the limit holds the old history too, and still reads as partial.
+ *
+ * Also true for an account paired before `syncFullHistory` was turned on, which
+ * is accurate: it has only what arrived since.
+ *
+ * Cached five minutes per connection, successes only, cleared wherever the
+ * setting is written and by `forgetInstanceStatus`.
+ */
+export async function recentHistoryOnly(instance: AppInstance): Promise<boolean | undefined> {
+  const now = Date.now()
+  const cached = historySettingCache.get(instance.id)
+  if (cached && now - cached.at < HISTORY_SETTING_TTL_MS) return cached.recentOnly
+
+  let settings: EvolutionSettings | null
+  try {
+    settings = await evolutionClientForInstance(instance)<EvolutionSettings | null>(
+      `/settings/find/${encodeURIComponent(instance.name)}`,
+    )
+  }
+  catch (error) {
+    console.warn(`[instances] could not read history settings for ${instance.id} (${instance.name}):`, error)
+    return undefined
+  }
+
+  // No settings row is Evolution's default, which is off.
+  const recentOnly = settings?.syncFullHistory !== true
+  for (const [id, entry] of historySettingCache) {
+    if (now - entry.at >= HISTORY_SETTING_TTL_MS) historySettingCache.delete(id)
+  }
+  historySettingCache.set(instance.id, { at: now, recentOnly })
+  return recentOnly
+}
+
+const historySettingCache = new Map<string, { at: number, recentOnly: boolean }>()
+const HISTORY_SETTING_TTL_MS = 5 * 60_000
+
+/**
+ * Said to a model alongside `recentHistoryOnly: true`. Shared by the read and
+ * search tools so the two cannot describe the gap differently.
+ */
+export const RECENT_HISTORY_NOTE
+  = 'This account\'s history was imported only in part: when it was linked, WhatsApp handed over '
+    + 'its recent history, not the full one, so older messages may never have been imported and '
+    + 'cannot be read or searched here. The oldest message stored is not necessarily the start of '
+    + 'a conversation, and finding nothing older is not proof nothing older exists — say so rather '
+    + 'than presenting what is here as the whole history. An admin of the account can import the '
+    + 'full history from its page in the web app, where their plan allows it.'
 
 // ── internals ──────────────────────────────────────────────────────────────
 
@@ -1621,13 +1822,9 @@ export async function connectionState(
   }
 }
 
-function zeroStats(): InstanceStats {
-  return { messages: 0, chats: 0, contacts: 0 }
-}
-
-/** Evolution could not be asked at all — see `connectionState`. */
+/** Evolution could not be asked at all — see `connectionState`. No counts: not measured is not zero. */
 function unknownStatus(): InstanceStatus {
-  return { state: 'unknown', stats: zeroStats() }
+  return { state: 'unknown' }
 }
 
 function normalizeState(state: string | undefined): ConnectionState {

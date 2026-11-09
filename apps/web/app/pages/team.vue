@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckIcon, MailIcon, PencilIcon, XIcon } from '@lucide/vue'
+import { CheckIcon, KeyRoundIcon, MailIcon, PencilIcon, XIcon } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 
 /**
@@ -138,6 +138,17 @@ async function remove(member: OrgMemberRow) {
       ? `${member.email} removed. ${result.revokedTokens} token(s) revoked.`
       : `${member.email} removed.`)
   }, { failure: 'Could not remove that member' })
+}
+
+/**
+ * Email a member a password reset. The admin starts the mail and nothing else:
+ * the link and code go only to the member's own address, and the member chooses
+ * the password. See server/utils/password-reset.ts.
+ */
+async function sendPasswordReset(member: OrgMemberRow) {
+  await runMember(async () => {
+    await $fetch(`/api/org/members/${member.userId}/password-reset`, { method: 'POST' })
+  }, { success: `Password reset emailed to ${member.email}.`, failure: 'Could not send the password reset' })
 }
 
 async function revokeInvite(invite: OrgInviteRow) {
@@ -315,6 +326,35 @@ const adminCount = computed(() => (data.value?.members ?? []).filter(m => m.role
                   >
                     {{ member.role === 'admin' ? 'Make member' : 'Make admin' }}
                   </Button>
+
+                  <!-- Your own password is the profile page's; this is for a
+                       colleague who is locked out. Hidden where there is no
+                       mail to send it with. -->
+                  <AlertDialog v-if="data?.passwordReset && member.userId !== user?.id">
+                    <AlertDialogTrigger as-child>
+                      <Button size="sm" variant="outline" :disabled="memberBusy">
+                        <KeyRoundIcon class="size-4" />
+                        Send password reset
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Email {{ member.email }} a password reset?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          They get a link and a code to choose a new password, valid for
+                          30 minutes. You won’t see either, and you can’t set the password
+                          yourself. Their current password keeps working until they use it.
+                          The email says an admin of {{ data?.org.name }} sent it.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction @click="sendPasswordReset(member)">
+                          Send
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
 
                   <AlertDialog>
                     <AlertDialogTrigger as-child>

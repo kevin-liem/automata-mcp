@@ -48,10 +48,11 @@ export interface OrgUsage {
  */
 export async function newOrganizationLimits(db: Db): Promise<OrgLimits & { plan_label?: string, tool_calls_required?: boolean }> {
   if (!hostedMode()) return {}
-  // tool_calls_required is not a number, but it is the same kind of fact: the
-  // cloud service decides it per plan, this app only obeys it (tool-calls.ts).
+  // tool_calls_required and recent_history_only are not numbers, but they are
+  // the same kind of fact: the cloud service decides them per plan, this app
+  // only obeys them (tool-calls.ts, whatsappHistoryLimited in instances.ts).
   const [defaults] = await db<(OrgLimits & { plan_label?: string, tool_calls_required?: boolean })[]>`
-    SELECT max_connections, max_tokens, max_members, plan_label, tool_calls_required
+    SELECT max_connections, max_tokens, max_members, plan_label, tool_calls_required, recent_history_only
     FROM app.entitlement_defaults WHERE id = 'new_organization'
   `
   if (!defaults) {
@@ -64,13 +65,39 @@ export async function newOrganizationLimits(db: Db): Promise<OrgLimits & { plan_
 /** Whether any limit applies at all. False for every self-hosted organization. */
 export function hasLimits(limits: OrgLimits | undefined): boolean {
   return limits?.max_connections != null || limits?.max_tokens != null || limits?.max_members != null
+    || limits?.recent_history_only === true
 }
 
 export async function loadOrgLimits(db: Db, orgId: string): Promise<OrgLimits | undefined> {
   const [row] = await db<OrgLimits[]>`
-    SELECT max_connections, max_tokens, max_members FROM app.organizations WHERE id = ${orgId}
+    SELECT max_connections, max_tokens, max_members, recent_history_only FROM app.organizations WHERE id = ${orgId}
   `
   return row
+}
+
+/**
+ * Whether the organization may ask WhatsApp for an account's full history at
+ * pairing. Only the flag — which connections it applies to (those on the
+ * deployment's own server) is `whatsappHistoryLimited` in instances.ts.
+ */
+export async function orgRecentHistoryOnly(db: Db, orgId: string): Promise<boolean> {
+  const [row] = await db<{ recent_history_only: boolean }[]>`
+    SELECT recent_history_only FROM app.organizations WHERE id = ${orgId}
+  `
+  return row?.recent_history_only === true
+}
+
+/**
+ * The refusal for asking for a full-history import on a plan that imports
+ * recent history only. Same 402 `plan_limit` shape as `limitError`, so the UI
+ * offers the Billing page the same way.
+ */
+export function fullHistoryLimitError() {
+  return createError({
+    statusCode: 402,
+    statusMessage: 'Your plan imports recent WhatsApp history only. Upgrade to import an account\'s full history.',
+    data: { code: 'plan_limit', resource: 'history' },
+  })
 }
 
 /**

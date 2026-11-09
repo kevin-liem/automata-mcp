@@ -138,7 +138,16 @@ export function createBridgeServer(manager: SessionManager, config: BridgeConfig
   ]
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://bridge')
+    // Node's parser accepts targets WHATWG URL refuses (`//x:99999/`), and this
+    // runs before any route's try: parse it guarded, answer 400.
+    let url: URL
+    try {
+      url = new URL(req.url ?? '/', 'http://bridge')
+    }
+    catch {
+      req.resume()
+      return send(res, { status: 400, body: { error: 'Bad request target.' } })
+    }
     const path = url.pathname
     const matching = routes.filter(route => route.pattern.test(path))
     const route = matching.find(candidate => candidate.method === req.method)
@@ -178,7 +187,15 @@ export function createBridgeServer(manager: SessionManager, config: BridgeConfig
     }
   }
 
-  return createServer((req, res) => { void handle(req, res) })
+  // Never `void`: a rejected handler is an unhandled rejection, which ends the
+  // process for every other caller.
+  return createServer((req, res) => {
+    handle(req, res).catch((error) => {
+      console.error(`[http] request failed: ${describeError(error)}`)
+      if (!res.headersSent) send(res, { status: 500, body: { error: 'Internal error.' } })
+      else res.destroy()
+    })
+  })
 }
 
 function bearerOf(req: IncomingMessage): string | undefined {

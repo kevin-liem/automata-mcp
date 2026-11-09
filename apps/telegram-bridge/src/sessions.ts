@@ -358,7 +358,11 @@ export class SessionManager {
     rt.heldElsewhere = false
 
     await this.dispose(rt)
-    void this.resume(rt, await this.row(id)).finally(() => this.publish(rt))
+    // Reached by a request: a rejection here (lock or DB read failing) must be
+    // logged, never left unhandled. The heartbeat retries.
+    this.resume(rt, await this.row(id))
+      .catch(error => console.error(`[sessions] ${id}: reconnect failed: ${describeError(error)}`))
+      .finally(() => this.publish(rt))
     return await this.state(id)
   }
 

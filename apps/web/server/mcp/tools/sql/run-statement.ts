@@ -54,7 +54,7 @@ export default defineKindTool({
   handler: async ({ sql, maxRows, timeoutMs, allowWholeTable, fullValues }) => {
     const { instance, scope } = useMcpAuth()
 
-    const result = await runSqlWrite(instance, scope, sql.trim(), { maxRows, timeoutMs, allowWholeTable, fullValues })
+    const result = await runSqlWrite(instance, scope, sql.trim(), { maxRows, timeoutMs, allowWholeTable, fullValues, signal: requestAbortSignal() })
 
     return {
       command: result.command,

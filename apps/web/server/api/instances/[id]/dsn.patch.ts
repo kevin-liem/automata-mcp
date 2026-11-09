@@ -11,7 +11,7 @@ const body = z.object({
  * does not work should be a failed edit with a message about the DSN, not a
  * connection that silently stops answering. The pool is dropped afterwards so
  * the change takes effect immediately rather than at the next fingerprint
- * check — belt and braces, since `pgFor` would notice on its own.
+ * check — belt and braces, since `withPg` would notice on its own.
  *
  * Every token on this connection keeps working, deliberately. The tokens name
  * *this connection*, not this credential; making an owner reissue them because

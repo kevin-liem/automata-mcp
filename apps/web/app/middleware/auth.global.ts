@@ -22,6 +22,13 @@ function isInviteRoute(path: string): boolean {
 const VERIFY_ROUTE = '/verify-email'
 
 /**
+ * Resetting a forgotten password, the same: asked for signed out, and the
+ * mailed link may be opened in any browser — one signed in to another account
+ * included, which a reset leaves signed in.
+ */
+const RESET_ROUTES = new Set(['/forgot-password', '/reset-password'])
+
+/**
  * Session gate. Authentication, plus the two routing decisions that depend on
  * the organization.
  *
@@ -48,7 +55,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
   const { user, hasOrg, isAdmin, membership, ensureLoaded } = useSession()
   await ensureLoaded()
 
-  if (isInviteRoute(to.path) || to.path === VERIFY_ROUTE) return
+  if (isInviteRoute(to.path) || to.path === VERIFY_ROUTE || RESET_ROUTES.has(to.path)) return
 
   const isPublic = PUBLIC_ROUTES.has(to.path)
 

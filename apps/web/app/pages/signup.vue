@@ -45,7 +45,7 @@ const plans: { id: PlanChoice, name: string, price: string, note: string, featur
     name: 'Free',
     price: '$0',
     note: 'For trying it out on your own.',
-    features: ['1 connection', '1 connector token', 'Just you', 'Unlimited requests', 'Telemetry, stored for 30 days'],
+    features: ['1 connection', '1 connector token', 'Just you', 'Recent WhatsApp history', 'Unlimited requests', 'Telemetry, stored for 30 days'],
   },
   {
     id: 'pro',
@@ -56,6 +56,7 @@ const plans: { id: PlanChoice, name: string, price: string, note: string, featur
       'Unlimited connections',
       'Unlimited connector tokens',
       '5 users included, $10/user/month after',
+      'Full WhatsApp history',
       'Unlimited requests',
       'Telemetry optional, off by default',
     ],

@@ -12,7 +12,8 @@ import { ChevronRightIcon } from '@lucide/vue'
  */
 const props = defineProps<{
   label: string
-  value: number
+  /** Absent when the count could not be measured: shown as a dash, never as 0. */
+  value?: number
   icon?: Component
   clickable?: boolean
 }>()
@@ -37,7 +38,7 @@ const format = new Intl.NumberFormat()
           <ChevronRightIcon v-if="props.clickable" class="ml-auto size-4 shrink-0" />
         </p>
         <p class="mt-1 font-heading text-3xl font-semibold tabular-nums">
-          {{ format.format(value) }}
+          {{ value === undefined ? '—' : format.format(value) }}
         </p>
       </CardContent>
     </component>

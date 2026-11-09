@@ -547,7 +547,7 @@
             "description": "Server-side statement timeout, in milliseconds",
             "type": "integer",
             "minimum": 500,
-            "maximum": 30000
+            "maximum": 120000
           },
           "fullValues": {
             "default": false,

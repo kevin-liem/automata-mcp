@@ -3,22 +3,33 @@ import type { Db } from './db.ts'
 /**
  * The plans, and the one place their rules live.
  *
- *   free   1 connection, 1 connector token, 1 user
+ *   free   1 connection, 1 connector token, 1 user; WhatsApp cannot opt in
+ *          to a full history import at pairing (disk)
  *   pro    7-day trial (card upfront), then a flat monthly price with five
  *          users included and a per-seat price beyond; everything unlimited
  *
  * The web app enforces limits but knows no plan: it reads three numbers per
  * organization (`max_connections`, `max_tokens`, `max_members`, NULL =
- * unlimited), one flag (`tool_calls_required`: Free records every MCP tool
- * call and its reason, with no way to turn that off) and the defaults a new
- * organization is born with. This file is what writes all of them, from the
- * Stripe status `syncOrg` (billing.ts) stores.
+ * unlimited) and two flags, both set on Free: `recent_history_only` (WhatsApp
+ * connections may not import full history; false = they may) and
+ * `tool_calls_required` (Free records every MCP tool call and its reason, with
+ * no way to turn that off). Plus the defaults a new organization is born with.
+ * This file is what writes all of them, from the Stripe status `syncOrg`
+ * (billing.ts) stores.
  */
 
 export type PlanName = 'free' | 'pro'
 
-/** What Free allows. Pro has no limits; it bills seats instead. */
-export const FREE_LIMITS = { connections: 1, tokens: 1, members: 1 } as const
+/**
+ * What Free allows. Pro has no limits; it bills seats instead.
+ *
+ * `recentHistoryOnly`: a full WhatsApp history import is most of the disk an
+ * account costs us, so Free may not tick "Import full history" on the create
+ * form (opt-in for everyone else) and gets only the recent slice WhatsApp sends
+ * any linked device. Applies to connections on our Evolution server only;
+ * history already imported is never deleted by it, in either direction.
+ */
+export const FREE_LIMITS = { connections: 1, tokens: 1, members: 1, recentHistoryOnly: true } as const
 
 /** Members included in Pro's base price; each one beyond is a billed seat. */
 export const INCLUDED_SEATS = 5
@@ -55,15 +66,16 @@ export function billableSeats(members: number): number {
 export async function writeEntitlementDefaults(db: Db): Promise<void> {
   await db`
     INSERT INTO app.entitlement_defaults
-      (id, max_connections, max_tokens, max_members, plan_label, tool_calls_required)
+      (id, max_connections, max_tokens, max_members, plan_label, tool_calls_required, recent_history_only)
     VALUES
-      ('new_organization', ${FREE_LIMITS.connections}, ${FREE_LIMITS.tokens}, ${FREE_LIMITS.members}, 'Free', true)
+      ('new_organization', ${FREE_LIMITS.connections}, ${FREE_LIMITS.tokens}, ${FREE_LIMITS.members}, 'Free', true, ${FREE_LIMITS.recentHistoryOnly})
     ON CONFLICT (id) DO UPDATE SET
       max_connections     = EXCLUDED.max_connections,
       max_tokens          = EXCLUDED.max_tokens,
       max_members         = EXCLUDED.max_members,
       plan_label          = EXCLUDED.plan_label,
       tool_calls_required = EXCLUDED.tool_calls_required,
+      recent_history_only = EXCLUDED.recent_history_only,
       updated             = now()
   `
 }
@@ -76,7 +88,8 @@ export interface PlanChange {
 
 /**
  * Turn each organization's stored Stripe status into entitlements: Free's
- * limits and required tool-call recording, or none of either for Pro. Leaving
+ * limits, required tool-call recording and recent-only WhatsApp history, or
+ * none of them for Pro. Leaving
  * Free hands recording back to the organization's own switch
  * (`record_tool_calls`, off unless an admin turned it on). One statement, so
  * the rule is written once whether it runs for one organization after a sync
@@ -99,11 +112,12 @@ export async function applyPlanEntitlements(db: Db, orgId?: string): Promise<Pla
       WHERE ${orgId ?? null}::text IS NULL OR id = ${orgId ?? null}
     )
     UPDATE app.organizations o SET
-      max_connections = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.connections}::int END,
-      max_tokens      = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.tokens}::int END,
-      max_members     = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.members}::int END,
+      max_connections     = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.connections}::int END,
+      max_tokens          = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.tokens}::int END,
+      max_members         = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.members}::int END,
       tool_calls_required = NOT next.is_pro,
-      plan_label      = next.label
+      recent_history_only = CASE WHEN next.is_pro THEN false ELSE ${FREE_LIMITS.recentHistoryOnly}::boolean END,
+      plan_label          = next.label
     FROM next
     WHERE o.id = next.id
     RETURNING o.id, next.previous AS "from", next.label AS "to"

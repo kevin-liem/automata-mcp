@@ -88,6 +88,39 @@ const CATALOG_DENYLIST = new Set([
   'query_to_xml', 'query_to_xml_and_xmlschema', 'database_to_xml',
 ])
 
+/**
+ * Catalog relations that hold something other than schema, refused for a token
+ * scoped to specific tables (an `allTables` token can read every table anyway).
+ *
+ *   - `pg_statistic` and the extended-statistics pair hold values *sampled from
+ *     the rows* — `most_common_vals`, `histogram_bounds` — for every table the
+ *     role can read. `pg_stats` and `pg_stats_ext` are views over them, so a
+ *     scoped token read an out-of-scope table's low-cardinality columns in full.
+ *     Refused for in-scope tables too: the plan touches the catalog as a whole
+ *     and cannot tell which table a `WHERE tablename = ...` picks.
+ *   - `pg_largeobject` is large-object content (superuser-only by default; this
+ *     matters for the superuser DSN the UI already warns about).
+ *   - `pg_user_mapping` carries foreign-server passwords, which the
+ *     `pg_user_mappings` view shows the mapping's own role.
+ */
+const CONTENT_CATALOGS = new Set([
+  'pg_catalog.pg_statistic',
+  'pg_catalog.pg_statistic_ext',
+  'pg_catalog.pg_statistic_ext_data',
+  'pg_catalog.pg_largeobject',
+  'pg_catalog.pg_user_mapping',
+])
+
+/**
+ * `pg_stat_activity` (and `pg_stat_ssl` / `pg_stat_gssapi`, built on the same
+ * function) returns the query text of every session of this role — other
+ * tokens' SQL, the owner's own application — and that text can quote values
+ * from any table. Same rule as `CONTENT_CATALOGS`, but a function, not a relation.
+ */
+const SCOPED_CONTENT_FUNCTIONS = new Set([
+  'pg_stat_get_activity', 'pg_stat_get_backend_activity',
+])
+
 /** SQL keywords that read as calls because of the trailing paren. Not functions. */
 const NOT_FUNCTIONS = new Set([
   'select', 'from', 'where', 'and', 'or', 'not', 'in', 'exists', 'case', 'when',
@@ -376,14 +409,35 @@ export async function assertRelationsInScope(
   scope: McpScope,
 ): Promise<void> {
   if (scope.allTables) return
+
+  // Before the empty-relations shortcut: `pg_stat_activity` plans to a bare
+  // Function Scan with no relation at all.
+  const contentFunction = facts.functions.find(n => SCOPED_CONTENT_FUNCTIONS.has(n))
+  if (contentFunction) {
+    refuse(
+      `This connector token is scoped to specific tables, so it will not run a query that calls ${contentFunction}(): `
+      + 'it returns the text of other sessions\' queries, which can quote values from any table.',
+    )
+  }
+
   if (facts.relations.length === 0) return
 
   const allowed = await expandAllowlist(tx, scope.tableNames)
 
   for (const relation of facts.relations) {
+    if (CONTENT_CATALOGS.has(relation.qname)) {
+      refuse(
+        `This connector token is scoped to specific tables, so it cannot read ${relation.qname}: `
+        + 'it holds data from beyond those tables (sampled column values behind pg_stats, large objects, or credentials). '
+        + 'Query the allowed tables directly instead.',
+      )
+    }
+
     // The catalogs are how a query names its own columns and types; refusing
-    // them would refuse almost every real query. They expose schema names, not
-    // row data, and that is stated in the docs rather than pretended away.
+    // them would refuse almost every real query. What they expose is schema:
+    // names, types, and object definitions (view and function bodies) — stated
+    // in the docs rather than pretended away. The few that hold row values or
+    // credentials are refused just above.
     if (relation.schema === 'pg_catalog' || relation.schema === 'information_schema') continue
 
     // `allowed` is `scope.tableNames` plus whatever inherits from it, so a name

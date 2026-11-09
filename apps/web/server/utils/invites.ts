@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { H3Event } from 'h3'
 import type { AppInvitation, AppUser, Db, OrgRole } from './app-db'
 import type { Actor } from './org'
+import { invitationEmail } from '../emails/account'
 
 /**
  * Organization invitations.
@@ -240,37 +241,6 @@ function recordInviteMail(orgId: string, email: string): void {
   orgMailTimes.set(orgId, [...(orgMailTimes.get(orgId) ?? []), now])
 }
 
-/** A header must not carry a line break; the organization name is user-typed. */
-function singleLine(value: string): string {
-  return value.replace(/[\r\n]+/g, ' ').trim()
-}
-
-export function inviteMail(input: {
-  orgName: string
-  invitedBy: AppUser
-  role: OrgRole
-  email: string
-  url: string
-}): { subject: string, text: string } {
-  const org = singleLine(input.orgName) || 'an organization'
-  const inviter = singleLine(input.invitedBy.name || '') || input.invitedBy.email
-
-  return {
-    subject: `You're invited to join ${org}`,
-    text: [
-      `${inviter} has invited you to join ${org} as ${input.role === 'admin' ? 'an admin' : 'a member'}.`,
-      '',
-      'Open this link to accept:',
-      input.url,
-      '',
-      `Sign in or sign up as ${input.email} to accept — the link works only for `
-      + 'that address. It expires in 14 days.',
-      '',
-      'If you were not expecting this, you can ignore this email.',
-    ].join('\n'),
-  }
-}
-
 /**
  * Email an invitation's link to the address stored on it. Answers whether the
  * mail went out; `sendAppEmail` logs the cause when it did not.
@@ -287,15 +257,16 @@ export async function sendInviteEmail(
 ): Promise<boolean> {
   recordInviteMail(actor.org.id, invite.email)
 
-  const mail = inviteMail({
+  const mail = invitationEmail({
+    inviterName: actor.user.name?.trim() || actor.user.email,
     orgName: actor.org.name,
-    invitedBy: actor.user,
     role: invite.role,
     email: invite.email,
     url: inviteUrl(event, code),
-  })
+    expiresInMs: INVITE_TTL_MS,
+  }, emailBrand())
 
-  return sendAppEmail({ to: invite.email, subject: mail.subject, text: mail.text })
+  return sendAppEmail({ to: invite.email, ...mail })
 }
 
 /**

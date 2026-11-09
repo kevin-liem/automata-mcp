@@ -158,7 +158,8 @@ export function authFailed(): Error {
  * Wrong is 403 — they are signed in, so this is not an authentication failure.
  *
  * Throttled per account, ten wrong answers per fifteen minutes, through the
- * same `claimAuthAttempt` the second-factor step uses, under `reauth:<id>`.
+ * same `claimAuthAttempt` the second-factor step uses (via `withAuthAttempt`),
+ * under `reauth:<id>`.
  * Without it the password stopped being a second proof beyond the cookie: a
  * stolen session could guess it here at scrypt speed, with no cap, and then
  * change the email or add its own second factor (GHSA-ggj4-ccmm-p6ww).
@@ -166,14 +167,8 @@ export function authFailed(): Error {
  * a right answer and on an outage (503), which is not a wrong guess.
  */
 export async function requireCurrentPassword(user: AppUser, password: string): Promise<void> {
-  const throttleKey = `reauth:${user.id}`
-  const claimedAt = claimAuthAttempt(throttleKey)
-  const ok = await checkPassword(user.email, password).catch((cause: unknown) => {
-    forgiveAuthAttempt(throttleKey, claimedAt)
-    throw cause
-  })
+  const ok = await withAuthAttempt(`reauth:${user.id}`, () => checkPassword(user.email, password), ok => !ok)
   if (!ok) {
     throw createError({ statusCode: 403, statusMessage: 'Current password is incorrect' })
   }
-  forgiveAuthAttempt(throttleKey, claimedAt)
 }

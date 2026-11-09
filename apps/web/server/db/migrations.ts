@@ -699,4 +699,118 @@ export const APP_MIGRATIONS: AppMigration[] = [
         ADD COLUMN connect_hold_until timestamptz;
     `,
   },
+  {
+    name: '0018_totp_setup_bound',
+    sql: /* sql */ `
+      -- An unconfirmed authenticator secret is the password check at
+      -- totp/setup carried forward to totp/confirm, which asks only for a
+      -- session. So it is bound and bounded like a sign-in challenge: only
+      -- the session that ran setup may confirm it (setup_session; a session
+      -- ending clears it, and NULL never matches), within a short window
+      -- from created, and attempts counts wrong codes, claimed before each
+      -- is checked; the fifth deletes the secret. Rows left from before this
+      -- carry no session and could never be confirmed, so they go now.
+      ALTER TABLE app.totp_credentials
+        ADD COLUMN attempts integer NOT NULL DEFAULT 0,
+        ADD COLUMN setup_session text REFERENCES app.sessions (id) ON DELETE SET NULL;
+      DELETE FROM app.totp_credentials WHERE confirmed_at IS NULL;
+    `,
+  },
+  {
+    name: '0019_whatsapp_group_scan_failures',
+    sql: /* sql */ `
+      -- Consecutive failed group scans since the last success. The back-off
+      -- after a failure doubles with each one (1 h, 2 h, 4 h ... capped at a
+      -- day), so an account whose scan never finishes stops costing
+      -- WhatsApp a full scan every hour. A success resets it. Rows whose last event was a failure start
+      -- at one, so they keep today's one-hour wait.
+      ALTER TABLE app.whatsapp_group_scans
+        ADD COLUMN failures integer NOT NULL DEFAULT 0 CHECK (failures >= 0);
+      UPDATE app.whatsapp_group_scans
+        SET failures = 1
+        WHERE failed_at IS NOT NULL AND (scanned_at IS NULL OR failed_at > scanned_at);
+    `,
+  },
+  {
+    name: '0020_password_resets',
+    sql: /* sql */ `
+      -- A password reset waiting to be used: mailed to the account's address,
+      -- either because someone asked on the "Forgot password?" page
+      -- (requested_by 'self') or because an admin of the account's
+      -- organization pressed the button on the Team page ('admin'). One per
+      -- account: asking again replaces it.
+      --
+      -- link_hash is the SHA-256 of the token in the mailed link; code_hash of
+      -- the row id and the six-digit code. attempts counts wrong codes,
+      -- claimed before each is checked; the fifth deletes the row. email is
+      -- the address the mail went to: the reset is spent only while the
+      -- account still signs in with it, so a mail sitting in an address the
+      -- account has since moved away from is dead. Written only by
+      -- server/utils/password-reset.ts.
+      CREATE TABLE app.password_resets (
+        id           text PRIMARY KEY,
+        user_id      text NOT NULL UNIQUE REFERENCES app.users (id) ON DELETE CASCADE,
+        email        text NOT NULL,
+        link_hash    text NOT NULL UNIQUE CHECK (length(link_hash) = 64),
+        code_hash    text NOT NULL CHECK (length(code_hash) = 64),
+        attempts     integer NOT NULL DEFAULT 0,
+        requested_by text NOT NULL CHECK (requested_by IN ('self', 'admin')),
+        expires_at   timestamptz NOT NULL,
+        created      timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX password_resets_expires_idx ON app.password_resets (expires_at);
+    `,
+  },
+  {
+    name: '0021_whatsapp_group_lookups',
+    sql: /* sql */ `
+      -- Group names no longer come from fetchAllGroups (a groupMetadata per
+      -- group, all at once: rate-overlimit bursts on large accounts, #175).
+      -- They come from Evolution's "Chat".name, and app.whatsapp_groups now
+      -- holds the answers of slow, one-group-at-a-time lookups instead of the
+      -- account's whole list. A row per group looked up:
+      --
+      --   fetched_at  the last lookup that answered; subject and size are
+      --               from it. NULL when every lookup of the group failed.
+      --   checked_at  the last lookup, answered or not, which paces the next.
+      --
+      -- Existing rows are scan answers, so both dates start as fetched_at.
+      ALTER TABLE app.whatsapp_groups
+        ALTER COLUMN fetched_at DROP NOT NULL,
+        ALTER COLUMN fetched_at DROP DEFAULT,
+        ADD COLUMN checked_at timestamptz;
+      UPDATE app.whatsapp_groups SET checked_at = fetched_at;
+      ALTER TABLE app.whatsapp_groups
+        ALTER COLUMN checked_at SET NOT NULL,
+        ALTER COLUMN checked_at SET DEFAULT now();
+
+      -- app.whatsapp_group_scans keeps its shape and becomes the per-account
+      -- lease for lookup runs: scanned_at = the last run that got an answer,
+      -- failed_at and failures = runs that got none, in a row.
+    `,
+  },
+  {
+    name: '0022_recent_history_only',
+    sql: /* sql */ `
+      -- Whether this organization may ask WhatsApp for an account's full
+      -- history at pairing (Baileys' requireFullSync) for connections on the
+      -- deployment's own Evolution server. A capability, not a plan: the cloud
+      -- service sets it for Free, since a full import is most of the disk an
+      -- account costs. false is no restriction — every self-hosted
+      -- organization. Full history is opt-in for everyone ("Import full
+      -- history" on the create form); this only locks that choice.
+      --
+      -- Read at create, by the dashboard's "Import full history" and before
+      -- every pairing (whatsappHistoryLimited in instances.ts). It deletes
+      -- nothing: history already imported stays.
+      --
+      -- IF NOT EXISTS: this shipped to preview databases as 0012 before main
+      -- took that number, and those must not fail on the renamed copy.
+      ALTER TABLE app.organizations
+        ADD COLUMN IF NOT EXISTS recent_history_only boolean NOT NULL DEFAULT false;
+
+      ALTER TABLE app.entitlement_defaults
+        ADD COLUMN IF NOT EXISTS recent_history_only boolean NOT NULL DEFAULT false;
+    `,
+  },
 ]

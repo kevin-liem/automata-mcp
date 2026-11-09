@@ -11,7 +11,11 @@ import { toast } from 'vue-sonner'
  *              so it works on another device — but only the browser holding
  *              the pending cookie is signed in; any other is sent to sign in,
  *              so a forwarded link cannot sign someone into the sender's
- *              organization. Names the address before Confirm. Spent only by
+ *              organization. Names the address (and, for an invitation, the
+ *              organization and role) before Confirm. An invited signup or an
+ *              address change is confirmable only in the browser that started
+ *              it, so elsewhere the page says where to finish instead of
+ *              offering Confirm. Spent only by
  *              the Confirm button, never on load — mail scanners open links,
  *              and opening one must not use it up.
  *   no token   the browser that started it, waiting for the six-digit code.
@@ -27,6 +31,10 @@ const token = computed(() => typeof route.query.token === 'string' ? route.query
 const { refresh } = useSession()
 
 interface Pending { purpose: 'signup' | 'email_change', email: string }
+interface LinkInfo extends Pending {
+  invite?: { orgName: string, role: OrgRole }
+  confirmableHere: boolean
+}
 
 const { data, status, refresh: refreshPending } = await useFetch<{ pending: Pending | null }>(
   '/api/auth/verify',
@@ -39,7 +47,7 @@ const pending = computed(() => data.value?.pending ?? null)
 
 // What the link would confirm, read without spending it. Client only, like the
 // pending read above: nothing about the token belongs in the SSR request.
-const { data: link, status: linkStatus, error: linkError } = await useFetch<Pending>('/api/auth/verify/link-info', {
+const { data: link, status: linkStatus, error: linkError } = await useFetch<LinkInfo>('/api/auth/verify/link-info', {
   method: 'POST',
   body: { token },
   immediate: Boolean(token.value),
@@ -120,15 +128,42 @@ async function resend() {
     <!-- The mailed link. -->
     <Skeleton v-if="token && (linkStatus === 'idle' || linkStatus === 'pending')" class="mt-8 h-40" />
 
+    <div v-else-if="token && link && link.invite" class="mt-8 space-y-4">
+      <p class="text-sm text-muted-foreground">
+        Confirm <span class="font-medium text-foreground">{{ link.email }}</span> as the sign-in
+        address of a new account joining
+        <span class="font-medium text-foreground">{{ link.invite.orgName }}</span>
+        as {{ link.invite.role === 'admin' ? 'an admin' : 'a member' }}, with the password chosen at signup.
+      </p>
+      <p class="text-sm text-muted-foreground">
+        Only confirm if you signed up with this address yourself. If you did not, close this
+        page: someone holding your invitation link may be trying to join as you.
+      </p>
+      <p v-if="!link.confirmableHere" class="text-sm text-muted-foreground">
+        This can only be confirmed in the browser where you signed up. Open the link there,
+        or enter the code from the email on that browser's confirmation page.
+      </p>
+      <Button v-else class="w-full" :disabled="busy" @click="confirmLink()">
+        {{ busy ? 'Confirming…' : 'Confirm email address' }}
+      </Button>
+    </div>
+
     <div v-else-if="token && link" class="mt-8 space-y-4">
       <p class="text-sm text-muted-foreground">
         Confirm <span class="font-medium text-foreground">{{ link.email }}</span> as
         {{ link.purpose === 'signup' ? 'the sign-in address of a new account' : 'your new sign-in address' }}.
       </p>
-      <p v-if="link.purpose === 'signup'" class="text-sm text-muted-foreground">
-        Only confirm if you signed up with this address yourself. If you did not, close this page.
+      <p class="text-sm text-muted-foreground">
+        {{ link.purpose === 'signup'
+          ? 'Only confirm if you signed up with this address yourself. If you did not, close this page.'
+          : 'Only confirm if you asked for this change yourself. If you did not, close this page.' }}
       </p>
-      <Button class="w-full" :disabled="busy" @click="confirmLink()">
+      <p v-if="!link.confirmableHere" class="text-sm text-muted-foreground">
+        This can only be confirmed in the browser where you asked for the change, signed in to
+        that account. Open the link there, or enter the code from the email on that browser's
+        confirmation page.
+      </p>
+      <Button v-else class="w-full" :disabled="busy" @click="confirmLink()">
         {{ busy ? 'Confirming…' : 'Confirm email address' }}
       </Button>
     </div>

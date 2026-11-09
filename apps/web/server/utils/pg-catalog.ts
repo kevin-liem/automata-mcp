@@ -1,3 +1,4 @@
+import type { Sql } from 'postgres'
 import type { AppInstance } from './app-db'
 import type { McpScope } from './mcp-scope'
 
@@ -55,7 +56,10 @@ export async function listPgTables(
   scope: McpScope,
   options: ListTablesOptions,
 ): Promise<PgTablePage> {
-  const sql = await pgFor(instance)
+  return await withPg(instance, sql => listTablesWith(sql, scope, options))
+}
+
+async function listTablesWith(sql: Sql, scope: McpScope, options: ListTablesOptions): Promise<PgTablePage> {
   const offset = (options.page - 1) * options.limit
   const pattern = options.search ? `%${escapeLike(options.search)}%` : null
 
@@ -228,7 +232,15 @@ export async function describePgTable(
   schema: string,
   name: string,
 ): Promise<PgTableDescription | undefined> {
-  const sql = await pgFor(instance)
+  return await withPg(instance, sql => describeTableWith(sql, scope, schema, name))
+}
+
+async function describeTableWith(
+  sql: Sql,
+  scope: McpScope,
+  schema: string,
+  name: string,
+): Promise<PgTableDescription | undefined> {
   const qname = qualifiedName(schema, name)
 
   const [target] = await sql<Array<{

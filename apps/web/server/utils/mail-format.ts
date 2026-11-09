@@ -63,7 +63,12 @@ const STALE_MS = 15 * 60_000
  */
 export function staleSyncNote(sync: MailSyncState | undefined): string | undefined {
   if (!sync?.lastSuccessAt) {
-    return 'This mailbox has not finished its first sync yet, so this listing may be missing mail. Try again in a few minutes.'
+    // A run in which any folder failed is not recorded as a success, so a
+    // folder failing from the start leaves no success at all; say it failed
+    // rather than that it is still running.
+    return sync?.lastErrorAt
+      ? 'The sync of this mailbox has not completed: its latest run failed, so this listing may be missing mail.'
+      : 'This mailbox has not finished its first sync yet, so this listing may be missing mail. Try again in a few minutes.'
   }
   if (sync.authFailed) {
     return `The mail server is refusing this connection's password, so nothing newer than ${sync.lastSuccessAt} `

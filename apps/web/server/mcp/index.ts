@@ -29,6 +29,17 @@ export default defineMcpHandler({
     // are never cross-read. See server/utils/mcp-auth.ts.
     event.context.mcpAuth = auth
 
+    // Body capped here, after auth, rather than in 00-body-limit.ts: a caller
+    // without a token never gets a byte read, and a tool call gets more room
+    // than the UI. Buffered into h3's cache, which the toolkit's read replays.
+    try {
+      await readCappedBody(event, MCP_BODY_LIMIT)
+    }
+    catch (error) {
+      const status = (error as { statusCode?: number })?.statusCode === 413 ? 413 : 400
+      return mcpBodyRefused(status)
+    }
+
     // Which client this token is used from, recorded on `initialize` only and
     // never awaited past the body read. Here rather than in a tool or hook: we
     // run stateless, so nothing later in the request has seen the initialize.

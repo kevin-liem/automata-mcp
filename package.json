@@ -10,6 +10,7 @@
     "preview": "pnpm --filter web preview",
     "generate": "pnpm --filter web generate",
     "typecheck": "pnpm --filter web typecheck",
+    "test:emails": "node --test apps/web/test/emails.test.mjs",
     "bridge:dev": "pnpm --filter telegram-bridge dev",
     "bridge:typecheck": "pnpm --filter telegram-bridge typecheck",
     "cloud:dev": "pnpm --filter cloud dev",

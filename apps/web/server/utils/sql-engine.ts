@@ -194,7 +194,7 @@ export async function sqlIdentity(
   const kind = requireSqlKind(instance)
   switch (kind) {
     case 'postgres': {
-      const identity = await pgIdentity(await pgFor(instance))
+      const identity = await withPg(instance, pgIdentity)
       if (!identity) return undefined
       return {
         server: `PostgreSQL ${identity.serverVersion}`,

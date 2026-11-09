@@ -236,6 +236,46 @@ Anything else is read as `required`. The link is built from
 cannot redirect it; without that URL the mail carries the code alone. Existing
 accounts are not asked to verify.
 
+The account emails are HTML with a plain-text part; their header logo is served
+by the web app and linked through `NUXT_PUBLIC_APP_URL` too. See
+[Account emails](alerts.md#account-emails).
+
+### Password reset
+
+"Forgot password?" on the sign-in page mails a link and a six-digit code to the
+address, and an admin can send the same mail to a member from the
+Organization page. Either way only the person with the inbox chooses the new
+password: the admin never sees the link or the code. Both expire after 30
+minutes and work once. Like the verification link, the reset link is built from
+`NUXT_PUBLIC_APP_URL` only; without it the mail carries the code alone.
+
+A reset signs every browser out of the account and then sends the person to
+sign in, so two-factor authentication still applies. It does not touch
+connector tokens. The address gets a "your password was changed" notice
+afterwards, as it does after a change on the profile page.
+
+**It needs SMTP.** Without `SMTP_HOST` the page says passwords cannot be reset
+here, and the admin button is hidden. On such a deployment the operator resets
+a password in the database. Hash the new password with the web image's own
+Node, in the format the app stores:
+
+```bash
+docker compose exec web node -e "const c=require('node:crypto');const s=c.randomBytes(16);c.scrypt(process.argv[1],s,64,{N:32768,r:8,p:1,maxmem:67108864},(e,k)=>console.log(['scrypt',32768,8,1,s.toString('base64'),k.toString('base64')].join('\$')))" 'the-new-password'
+```
+
+In the single container, run the same with `docker exec <container> /opt/node22/bin/node -e …`.
+Then store it and end the account's sessions:
+
+```sql
+BEGIN;
+UPDATE app.users SET password_hash = '<the printed scrypt$… string>', updated = now() WHERE email = 'person@example.com';
+DELETE FROM app.sessions WHERE user_id = (SELECT id FROM app.users WHERE email = 'person@example.com');
+COMMIT;
+```
+
+Check who is asking before you do this, and send the password to them over a
+channel you trust.
+
 ## ⚠️ WhatsApp pairing burns a real phone number
 
 Scanning the QR binds a real WhatsApp account to an instance. WhatsApp rate-limits
@@ -280,7 +320,7 @@ has.
 | `invitations` | SHA-256 of the invitation code, address, role, expiry |
 | `mcp_tokens` | SHA-256 of the connector token, holder, scope, expiry, `last_used_at` |
 | `mcp_token_clients`, `mcp_tool_calls` | which MCP clients used each token, and the Telemetry tool-call history (kept 30 days) |
-| `whatsapp_groups`, `whatsapp_group_scans` | last-known WhatsApp group names and sizes, and when each account's groups were last fetched (at most every six hours) — see [WhatsApp](whatsapp.md) |
+| `whatsapp_groups`, `whatsapp_group_scans` | WhatsApp group names and sizes from slow, one-group-at-a-time lookups, and when each account last ran them — see [WhatsApp](whatsapp.md) |
 | `totp_credentials`, `webauthn_credentials`, `recovery_codes`, `mfa_challenges` | second sign-in factors — see [Two-factor authentication](two-factor.md) |
 | `email_verifications` | signups and address changes waiting to be confirmed — see [Email verification](#email-verification) |
 | `mail_sync_state`, `mail_folders`, `mail_messages` | synced IMAP headers, never bodies — see [Email (IMAP) connections](imap.md) |

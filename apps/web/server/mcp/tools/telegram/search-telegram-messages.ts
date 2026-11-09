@@ -25,7 +25,10 @@ export default defineKindTool({
     openWorldHint: false,
   },
   inputSchema: {
-    query: z.string().min(2).describe('Words to look for. All of them must appear in the message.'),
+    query: z.string().min(2).max(MAX_SEARCH_QUERY_LENGTH).describe(
+      `Words to look for. All of them must appear in the message. At most ${MAX_SEARCH_TERMS} words `
+      + `of at most ${MAX_SEARCH_TERM_LENGTH} characters each.`,
+    ),
     chatId: z.string().regex(/^-?\d{1,20}$/, 'a chat id written as a string of digits').optional()
       .describe('Restrict to one chat, using a `chatId` from list-telegram-chats. Omit to search every chat.'),
     since: z.string().optional().describe('Only messages at or after this date, e.g. 2024-03-01 or 2024-03-01T12:00:00Z'),
@@ -36,7 +39,7 @@ export default defineKindTool({
   handler: async ({ query, chatId, since, until, fromMe, limit }) => {
     const { instance, scope } = useMcpAuth()
 
-    const terms = query.split(/\s+/).filter(Boolean)
+    const terms = splitSearchTerms(query, 'query')
     if (!terms.length) {
       throw createError({ statusCode: 400, message: '`query` needs at least one word to search for.' })
     }

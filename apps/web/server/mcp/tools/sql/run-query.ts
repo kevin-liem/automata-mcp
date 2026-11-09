@@ -62,7 +62,7 @@ export default defineKindTool({
       '1-based page of `maxRows` rows. Walk it up with nextPage while hasMore is true; '
       + 'pages are consistent only under an ORDER BY on a unique column.',
     ),
-    timeoutMs: z.number().int().min(500).max(30_000).default(10_000).describe('Server-side statement timeout, in milliseconds'),
+    timeoutMs: z.number().int().min(500).max(MAX_READ_TIMEOUT_MS).default(10_000).describe('Server-side statement timeout, in milliseconds'),
     fullValues: z.boolean().default(false).describe(
       'Return every cell whole instead of clipping each at 2000 characters. Set it '
       + 'only when you need a long text or JSON value in full: a page of large cells '
@@ -79,9 +79,11 @@ export default defineKindTool({
   },
   handler: async ({ sql, maxRows, page, timeoutMs, fullValues, explain }) => {
     const { instance, scope } = useMcpAuth()
+    // The query is cancelled on the database if the client goes away first.
+    const signal = requestAbortSignal()
 
     if (explain) {
-      const result = await explainSqlRead(instance, scope, sql.trim(), { timeoutMs })
+      const result = await explainSqlRead(instance, scope, sql.trim(), { timeoutMs, signal })
       return {
         explain: true,
         plan: result.plan,
@@ -96,7 +98,7 @@ export default defineKindTool({
       }
     }
 
-    const result = await runSqlRead(instance, scope, sql.trim(), { maxRows, page, timeoutMs, fullValues })
+    const result = await runSqlRead(instance, scope, sql.trim(), { maxRows, page, timeoutMs, fullValues, signal })
 
     return {
       columns: result.columns,

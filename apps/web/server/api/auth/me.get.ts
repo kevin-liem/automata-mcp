@@ -22,7 +22,7 @@ import type { AppUser } from '~~/server/utils/app-db'
  * no field — so a self-hosted UI never learns plans exist. A read failure is a
  * 503 like the membership read.
  */
-async function planSummary(orgId: string): Promise<{ plan: string, limited: boolean, overLimit: boolean } | undefined> {
+async function planSummary(orgId: string): Promise<{ plan: string, limited: boolean, overLimit: boolean, recentHistoryOnly: boolean } | undefined> {
   if (!hostedMode()) return undefined
   try {
     const sql = await appDb()
@@ -31,7 +31,14 @@ async function planSummary(orgId: string): Promise<{ plan: string, limited: bool
       loadOrgLimits(sql, orgId),
       orgUsage(sql, orgId),
     ])
-    return { plan: org?.plan_label ?? 'Free', limited: hasLimits(limits), overLimit: overLimit(limits, usage) }
+    return {
+      plan: org?.plan_label ?? 'Free',
+      limited: hasLimits(limits),
+      overLimit: overLimit(limits, usage),
+      // Whether the create form may offer a full WhatsApp history import on
+      // this deployment's server. The server refuses it independently.
+      recentHistoryOnly: limits?.recent_history_only === true,
+    }
   }
   catch (error) {
     console.error('[entitlements] could not read the plan for organization', orgId, error)

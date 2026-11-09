@@ -117,8 +117,3 @@ function isTextual(mimeType: string): boolean {
     || /^application\/(json|xml|csv|x-csv|ics|javascript|x-yaml|yaml)$/.test(mimeType)
     || /\+(json|xml)$/.test(mimeType)
 }
-
-function attachmentMaxBytes(): number {
-  const value = Number(useRuntimeConfig().imapAttachmentMaxBytes)
-  return Number.isFinite(value) && value > 0 ? value : 10 * 1024 * 1024
-}

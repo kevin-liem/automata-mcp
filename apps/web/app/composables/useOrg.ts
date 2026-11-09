@@ -35,6 +35,8 @@ export interface OrgResponse {
    * — mirrors `ToolCallSetting` in server/utils/tool-calls.ts.
    */
   toolCalls?: { recording: boolean, required: boolean }
+  /** Admin-only: whether "Send password reset" can work here — it needs mail. */
+  passwordReset?: boolean
 }
 
 /** What to call a role in prose. */

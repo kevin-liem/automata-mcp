@@ -17,6 +17,8 @@ export function usePlan() {
     billing: computed(() => Boolean(plan.value)),
     limited: computed(() => Boolean(membership.value?.org.limited)),
     overLimit: computed(() => Boolean(membership.value?.org.overLimit)),
+    /** WhatsApp connections on this deployment's server may not import full history. */
+    recentHistoryOnly: computed(() => Boolean(membership.value?.org.recentHistoryOnly)),
   }
 }
 
