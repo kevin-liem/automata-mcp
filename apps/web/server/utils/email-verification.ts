@@ -74,6 +74,16 @@ const ROW_COLUMNS = [
 
 let warnedSetting = false
 
+export function emailChangeDisabled(): boolean {
+  return String(useRuntimeConfig().disableEmailChange).trim().toLowerCase() === 'true'
+}
+
+export function assertEmailChangeAllowed(): void {
+  if (emailChangeDisabled()) {
+    throw createError({ statusCode: 403, statusMessage: 'Email changes are disabled for this deployment' })
+  }
+}
+
 export function verificationSetting(): VerificationSetting {
   const value = String(useRuntimeConfig().emailVerification ?? '').trim().toLowerCase()
   if (value === '' || value === 'auto') return 'auto'
@@ -359,6 +369,7 @@ export async function resolvePendingVerification(event: H3Event): Promise<Verifi
         AND expires_at > now()
         AND attempts < ${MAX_CODE_ATTEMPTS}
     `
+    if (row?.purpose === 'email_change' && emailChangeDisabled()) return undefined
     return row
   }
   catch (cause) {
@@ -493,6 +504,7 @@ export async function describeVerificationLink(token: string): Promise<{ purpose
         AND expires_at > now()
         AND attempts < ${MAX_CODE_ATTEMPTS}
     `
+    if (row?.purpose === 'email_change' && emailChangeDisabled()) return undefined
     return row ? { purpose: row.purpose, email: row.email } : undefined
   }
   catch (cause) {
@@ -622,6 +634,8 @@ async function createVerifiedAccount(tx: Db, row: VerificationRow): Promise<stri
 
 /** Returns the address being replaced. */
 async function changeVerifiedEmail(tx: Db, row: VerificationRow): Promise<string> {
+  // A verification link may have been issued before the lock was enabled.
+  assertEmailChangeAllowed()
   const [current] = await tx<Pick<AppUser, 'email'>[]>`
     SELECT email FROM app.users WHERE id = ${row.user_id!} FOR UPDATE
   `

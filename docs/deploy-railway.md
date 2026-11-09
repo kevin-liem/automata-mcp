@@ -194,6 +194,11 @@ too. `NUXT_SIGNUP=open` lets anyone who finds the domain sign up. See
 new signups and address changes are verified by email — see
 [Email verification](self-hosting.md#email-verification).
 
+**Lock sign-in email addresses.** Set `NUXT_DISABLE_EMAIL_CHANGE=true` on the
+web service to make the email address read-only in Profile for all accounts.
+This also blocks pending address changes from being confirmed. Signup email
+verification follows `NUXT_EMAIL_VERIFICATION`.
+
 ## First run
 
 Nothing to do. The web service creates its schema in Postgres on first boot —

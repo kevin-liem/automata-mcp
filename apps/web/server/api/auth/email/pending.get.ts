@@ -1,5 +1,9 @@
-/** The address change waiting on verification, if any, for the profile page. */
+/** The email change policy and any address waiting on verification for Profile. */
 export default defineEventHandler(async (event) => {
   const user = await requireSessionUser(event)
-  return { pendingEmail: (await pendingEmailChange(user.id)) ?? null }
+  const disabled = emailChangeDisabled()
+  return {
+    emailChangeDisabled: disabled,
+    pendingEmail: disabled ? null : (await pendingEmailChange(user.id)) ?? null,
+  }
 })

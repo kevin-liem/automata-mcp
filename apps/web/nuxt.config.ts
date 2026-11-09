@@ -159,6 +159,7 @@ export default defineNuxtConfig({
     // NUXT_SMTP_HOST is set), `required` or `off`; anything else is read as
     // required. See server/utils/email-verification.ts.
     emailVerification: 'auto',
+    disableEmailChange: false,
 
     webhookUrl: '',
     webhookSecret: '',

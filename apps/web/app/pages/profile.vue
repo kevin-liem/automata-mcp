@@ -33,7 +33,11 @@ const mismatch = ref('')
 
 // An address change waiting on its mailed code (email verification on). The old
 // address stays the sign-in until it is confirmed.
-const { data: pendingData, refresh: refreshPendingEmail } = await useFetch<{ pendingEmail: string | null }>('/api/auth/email/pending')
+const { data: pendingData, refresh: refreshPendingEmail } = await useFetch<{
+  emailChangeDisabled: boolean
+  pendingEmail: string | null
+}>('/api/auth/email/pending')
+const emailChangeDisabled = computed(() => pendingData.value?.emailChangeDisabled ?? false)
 const pendingEmail = computed(() => pendingData.value?.pendingEmail ?? null)
 
 const { busy: nameBusy, run: runName } = useApiAction()
@@ -150,8 +154,9 @@ async function submitPassword() {
         Profile
       </h1>
       <p class="text-sm text-muted-foreground">
-        Your account. Changing the email address or the password asks for your
-        current password.
+        Your account. Changing
+        {{ emailChangeDisabled ? 'the password' : 'the email address or the password' }}
+        asks for your current password.
       </p>
     </div>
 
@@ -182,7 +187,10 @@ async function submitPassword() {
     <Card>
       <CardHeader>
         <CardTitle>Email address</CardTitle>
-        <CardDescription>
+        <CardDescription v-if="emailChangeDisabled">
+          Email changes are disabled for this deployment.
+        </CardDescription>
+        <CardDescription v-else>
           You sign in with this. A pending invitation sent to your old address
           will no longer be yours to accept.
         </CardDescription>
@@ -205,7 +213,10 @@ async function submitPassword() {
           </div>
         </div>
 
-        <form class="max-w-sm space-y-4" @submit.prevent="submitEmail">
+        <p v-if="emailChangeDisabled" class="break-all text-sm">
+          {{ user?.email }}
+        </p>
+        <form v-else class="max-w-sm space-y-4" @submit.prevent="submitEmail">
           <div class="space-y-2">
             <Label for="profile-email">New address</Label>
             <Input

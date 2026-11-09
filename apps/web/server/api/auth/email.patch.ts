@@ -31,6 +31,7 @@ const body = z.object({
  */
 export default defineEventHandler(async (event) => {
   const user = await requireSessionUser(event)
+  assertEmailChangeAllowed()
   const { email, currentPassword } = await parseBody(event, body)
 
   await requireCurrentPassword(user, currentPassword)
