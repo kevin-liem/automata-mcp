@@ -12,6 +12,7 @@ export default defineNuxtConfig({
 
   app: {
     head: {
+      title: 'DOPE',
       meta: [
         // The page's own --background, so a mobile browser's chrome matches it.
         { name: 'theme-color', content: '#f4f1e8' },

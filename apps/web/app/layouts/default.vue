@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronDownIcon, CircleUserIcon, CreditCardIcon, LogOutIcon, MailIcon, UserIcon, UsersIcon } from '@lucide/vue'
+import { ChevronDownIcon, CircleUserIcon, CreditCardIcon, LogOutIcon, UserIcon, UsersIcon } from '@lucide/vue'
 
 const { user, org, isAdmin, logout } = useSession()
 // Undefined without billing, so a self-hosted header carries no plan at all.
@@ -24,13 +24,6 @@ const hosted = useHosted()
         </div>
 
         <div class="flex items-center gap-3">
-          <Button as-child variant="ghost" size="sm">
-            <a href="https://www.getautomata.app/contact" target="_blank" rel="noopener noreferrer">
-              <MailIcon class="size-4" />
-              <span class="hidden sm:inline">Contact</span>
-            </a>
-          </Button>
-
           <Button v-if="org && plan && isAdmin" as-child variant="ghost" size="sm">
             <NuxtLink to="/billing">
               <CreditCardIcon class="size-4" />
