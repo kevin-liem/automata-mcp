@@ -6,9 +6,8 @@ import type { McpAuth } from './mcp-auth'
  * or writes `app.mcp_tool_calls`.
  *
  * **Recorded only while the organization records.** `record_tool_calls` is the
- * organization's own switch, off by default; `tool_calls_required` is written by
- * the cloud service (on for Free on the hosted deployment) and overrides it.
- * Both ride on `resolveMcpAuth`'s existing organization join, so an
+ * organization's own switch, off by default on every plan. It rides on
+ * `resolveMcpAuth`'s existing organization join, so an
  * organization that records nothing pays nothing here.
  *
  * **`reason` is the model's own one-line account of why it called the tool** —
@@ -124,45 +123,34 @@ export async function listToolCalls(
   }
 }
 
-/** Whether an organization records tool calls, and whether it may stop. */
+/** Whether an organization records tool calls. */
 export interface ToolCallSetting {
   /** Calls are being recorded now. */
   recording: boolean
-  /** Recording is required for this organization and cannot be turned off. */
+  /** Kept for clients of the organization and token activity endpoints. */
   required: boolean
 }
 
 export async function loadToolCallSetting(orgId: string): Promise<ToolCallSetting> {
   const sql = await appDb()
-  const [row] = await sql<{ record_tool_calls: boolean, tool_calls_required: boolean }[]>`
-    SELECT record_tool_calls, tool_calls_required FROM app.organizations WHERE id = ${orgId}
+  const [row] = await sql<{ record_tool_calls: boolean }[]>`
+    SELECT record_tool_calls FROM app.organizations WHERE id = ${orgId}
   `
-  const required = row?.tool_calls_required ?? false
-  return { recording: required || (row?.record_tool_calls ?? false), required }
+  return { recording: row?.record_tool_calls ?? false, required: false }
 }
 
-/**
- * Turn recording on or off for an organization. Turning it off is refused with
- * 402 `plan_limit` while recording is required — the UI keys on that code to
- * offer admins the Billing page — and decided by one conditional UPDATE, so a
- * plan change landing between a check and the write cannot slip one through.
- */
+/** Update the organization's recording preference. */
 export async function setToolCallRecording(orgId: string, on: boolean): Promise<ToolCallSetting> {
   const sql = await appDb()
-  // Turning it on is always allowed; only turning it off is refused while required.
-  const [row] = await sql<{ record_tool_calls: boolean, tool_calls_required: boolean }[]>`
+  const [row] = await sql<{ record_tool_calls: boolean }[]>`
     UPDATE app.organizations SET record_tool_calls = ${on}
-    WHERE id = ${orgId} AND (${on}::boolean OR NOT tool_calls_required)
-    RETURNING record_tool_calls, tool_calls_required
+    WHERE id = ${orgId}
+    RETURNING record_tool_calls
   `
   if (!row) {
-    throw createError({
-      statusCode: 402,
-      statusMessage: 'Your plan includes telemetry, which cannot be turned off. Upgrade to choose.',
-      data: { code: 'plan_limit', resource: 'tool_calls' },
-    })
+    throw createError({ statusCode: 404, statusMessage: 'Organization not found' })
   }
-  return { recording: row.tool_calls_required || row.record_tool_calls, required: row.tool_calls_required }
+  return { recording: row.record_tool_calls, required: false }
 }
 
 /** Delete calls older than `RETENTION`. Idempotent, so safe on every replica. */

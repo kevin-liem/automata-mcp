@@ -8,11 +8,7 @@ const body = z.object({
   recordToolCalls: z.boolean().optional(),
 }).refine(value => value.name !== undefined || value.recordToolCalls !== undefined, 'Nothing to change')
 
-/**
- * Rename the organization, or turn tool-call recording on or off. Admin-only.
- * Recording cannot be turned off while the organization's plan requires it
- * (402 `plan_limit`, from `setToolCallRecording`).
- */
+/** Rename the organization or set its tool-call recording preference. Admin-only. */
 export default defineEventHandler(async (event) => {
   const actor = await requireOrgAdmin(event)
   const { name, recordToolCalls } = await parseBody(event, body)

@@ -91,7 +91,7 @@ click on Railway or with Docker.
 
 [Sign up at mcp.getautomata.app](https://mcp.getautomata.app/signup) and skip
 to [Connect Claude](#connect-claude). Free covers one connection, one connector
-token and one user, with telemetry always on; Pro is $19/month after a 7-day
+token and one user. Pro is $19/month after a 7-day
 trial, with unlimited connections and tokens and five users included
 ($10/user after).
 

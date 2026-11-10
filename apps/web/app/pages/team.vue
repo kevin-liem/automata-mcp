@@ -21,23 +21,6 @@ const renaming = ref(false)
 const draftName = ref('')
 const { busy: renameBusy, run: runRename } = useApiAction()
 const { busy: memberBusy, run: runMember } = useApiAction()
-const { busy: toolCallsBusy, run: runToolCalls } = useApiAction()
-
-/**
- * Turn tool-call recording on or off. The server refuses turning it off while
- * the organization's plan requires it (402 `plan_limit`, which the action
- * helper words with a link to Billing), so the disabled checkbox is
- * presentation only.
- */
-async function setRecording(on: boolean) {
-  await runToolCalls(async () => {
-    await $fetch('/api/org', { method: 'PATCH', body: { recordToolCalls: on } })
-    await refresh()
-  }, {
-    success: on ? 'Telemetry is on.' : 'Telemetry is off.',
-    failure: 'Could not change telemetry',
-  })
-}
 
 function startRename() {
   draftName.value = data.value?.org.name ?? ''
@@ -236,40 +219,6 @@ const adminCount = computed(() => (data.value?.members ?? []).filter(m => m.role
             <PencilIcon class="size-4" />
             Rename
           </Button>
-        </div>
-      </CardContent>
-    </Card>
-
-    <!-- Shown to members too: their calls are recorded as well, and whether
-         they are is theirs to know. -->
-    <Card v-if="data?.toolCalls">
-      <CardHeader>
-        <CardTitle>Telemetry</CardTitle>
-        <CardDescription>
-          <a href="https://www.getautomata.app/docs/telemetry" target="_blank" rel="noopener noreferrer" class="underline underline-offset-4 hover:text-foreground">Learn more</a>
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div class="flex items-start gap-3">
-          <Checkbox
-            id="record-tool-calls"
-            :model-value="data.toolCalls.recording"
-            :disabled="!isAdmin || data.toolCalls.required || toolCallsBusy"
-            class="mt-0.5"
-            @update:model-value="setRecording($event === true)"
-          />
-          <div class="space-y-1">
-            <Label for="record-tool-calls" class="font-normal">Collect telemetry</Label>
-            <p v-if="data.toolCalls.required" class="text-xs text-muted-foreground">
-              Always on with your plan.
-              <NuxtLink v-if="isAdmin" to="/billing" class="underline underline-offset-4">
-                See plans
-              </NuxtLink>
-            </p>
-            <p v-else-if="!isAdmin" class="text-xs text-muted-foreground">
-              Only an admin can change this.
-            </p>
-          </div>
         </div>
       </CardContent>
     </Card>

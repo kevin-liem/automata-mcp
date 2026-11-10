@@ -41,8 +41,8 @@ interface McpAuthBase {
    */
   sendDisclaimer?: string
   /**
-   * Whether this organization records tool calls — its own switch, or required
-   * by its plan. Read on the same query, so it costs nothing. See tool-calls.ts.
+   * Whether this organization opted in to recording tool calls. Read on the
+   * same query, so it costs nothing. See tool-calls.ts.
    */
   recordToolCalls: boolean
 }
@@ -82,7 +82,6 @@ interface McpTokenFacts extends Pick<AppMcpToken,
   max_connections?: number
   max_tokens?: number
   record_tool_calls?: boolean
-  tool_calls_required?: boolean
   assigned: boolean
 }
 
@@ -164,7 +163,7 @@ export async function resolveMcpAuth(event: H3Event): Promise<McpAuth | undefine
              u.email AS user_email, u.name AS user_name,
              m.role AS member_role, m.org AS member_org,
              o.max_connections, o.max_tokens,
-             o.record_tool_calls, o.tool_calls_required,
+             o.record_tool_calls,
              EXISTS (
                SELECT 1 FROM app.instance_assignments a
                WHERE a.user_id = t.assigned_to AND a.instance = t.instance
@@ -244,7 +243,7 @@ export async function resolveMcpAuth(event: H3Event): Promise<McpAuth | undefine
     scope: scopeFromRecord(record),
     sendDisclaimer: record.send_disclaimer || undefined,
     limits: { max_connections: record.max_connections, max_tokens: record.max_tokens },
-    recordToolCalls: Boolean(record.tool_calls_required || record.record_tool_calls),
+    recordToolCalls: Boolean(record.record_tool_calls),
   }
 
   let auth: McpAuth

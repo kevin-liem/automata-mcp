@@ -25,7 +25,6 @@ Self-hosted deployments never run the cloud service.
 | Connector tokens | 1 | unlimited |
 | Users | 1 | 5 included, $10/user/month after |
 | Requests | unlimited | unlimited |
-| Telemetry | always on, stored 30 days | optional, off by default |
 | WhatsApp history at pairing | recent only | recent, or full if chosen |
 
 **WhatsApp history.** Every new WhatsApp connection imports the recent history
@@ -92,7 +91,6 @@ retry settings in Stripe decide how long that lasts.
 The plan and its limits are kept apart:
 - **Plan:** Stripe status, decided by the billing code.
 - **Limits:** three plain numbers on each organization, `max_connections`, `max_tokens` and `max_members`. NULL means unlimited.
-- **Required telemetry:** one flag on each organization, `tool_calls_required`. While it is true, every MCP tool call and the reason Claude gave for it are recorded and the organization can't turn that off. It's true on Free and false on Pro. See "Telemetry" in [using-automata.md](using-automata.md).
 - **Recent WhatsApp history only:** one more flag, `recent_history_only`. While it is true, the organization's WhatsApp connections on this deployment's Evolution server can't import full history (see above). It's true on Free and false on Pro.
 
 The cloud service writes those values whenever a subscription changes, and for every organization each time it starts. The web app's checks only ever read them, so they keep working, from the database, even while the cloud service is down.

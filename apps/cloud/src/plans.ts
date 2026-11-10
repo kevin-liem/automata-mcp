@@ -10,10 +10,9 @@ import type { Db } from './db.ts'
  *
  * The web app enforces limits but knows no plan: it reads three numbers per
  * organization (`max_connections`, `max_tokens`, `max_members`, NULL =
- * unlimited) and two flags, both set on Free: `recent_history_only` (WhatsApp
- * connections may not import full history; false = they may) and
- * `tool_calls_required` (Free records every MCP tool call and its reason, with
- * no way to turn that off). Plus the defaults a new organization is born with.
+ * unlimited) and `recent_history_only` (WhatsApp connections may import full
+ * history when false). The same plan rules supply the defaults for new
+ * organizations.
  * This file is what writes all of them, from the Stripe status `syncOrg`
  * (billing.ts) stores.
  */
@@ -68,7 +67,7 @@ export async function writeEntitlementDefaults(db: Db): Promise<void> {
     INSERT INTO app.entitlement_defaults
       (id, max_connections, max_tokens, max_members, plan_label, tool_calls_required, recent_history_only)
     VALUES
-      ('new_organization', ${FREE_LIMITS.connections}, ${FREE_LIMITS.tokens}, ${FREE_LIMITS.members}, 'Free', true, ${FREE_LIMITS.recentHistoryOnly})
+      ('new_organization', ${FREE_LIMITS.connections}, ${FREE_LIMITS.tokens}, ${FREE_LIMITS.members}, 'Free', false, ${FREE_LIMITS.recentHistoryOnly})
     ON CONFLICT (id) DO UPDATE SET
       max_connections     = EXCLUDED.max_connections,
       max_tokens          = EXCLUDED.max_tokens,
@@ -88,12 +87,10 @@ export interface PlanChange {
 
 /**
  * Turn each organization's stored Stripe status into entitlements: Free's
- * limits, required tool-call recording and recent-only WhatsApp history, or
- * none of them for Pro. Leaving
- * Free hands recording back to the organization's own switch
- * (`record_tool_calls`, off unless an admin turned it on). One statement, so
- * the rule is written once whether it runs for one organization after a sync
- * or for all of them at boot.
+ * limits and recent-only WhatsApp history, or unlimited access for Pro.
+ * Clear the legacy recording requirement so older web replicas also respect
+ * the organization's own recording preference. The same update runs for one
+ * organization after a sync or for all of them at boot.
  *
  * Answers the organizations whose plan label changed, for `plan.changed`.
  */
@@ -115,7 +112,7 @@ export async function applyPlanEntitlements(db: Db, orgId?: string): Promise<Pla
       max_connections     = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.connections}::int END,
       max_tokens          = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.tokens}::int END,
       max_members         = CASE WHEN next.is_pro THEN NULL ELSE ${FREE_LIMITS.members}::int END,
-      tool_calls_required = NOT next.is_pro,
+      tool_calls_required = false,
       recent_history_only = CASE WHEN next.is_pro THEN false ELSE ${FREE_LIMITS.recentHistoryOnly}::boolean END,
       plan_label          = next.label
     FROM next

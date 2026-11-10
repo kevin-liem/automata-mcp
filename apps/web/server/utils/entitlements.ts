@@ -46,13 +46,10 @@ export interface OrgUsage {
  * writes at boot (`app.entitlement_defaults`) — and a 503 while that row is
  * missing, since creating the organization unlimited is the one wrong answer.
  */
-export async function newOrganizationLimits(db: Db): Promise<OrgLimits & { plan_label?: string, tool_calls_required?: boolean }> {
+export async function newOrganizationLimits(db: Db): Promise<OrgLimits & { plan_label?: string }> {
   if (!hostedMode()) return {}
-  // tool_calls_required and recent_history_only are not numbers, but they are
-  // the same kind of fact: the cloud service decides them per plan, this app
-  // only obeys them (tool-calls.ts, whatsappHistoryLimited in instances.ts).
-  const [defaults] = await db<(OrgLimits & { plan_label?: string, tool_calls_required?: boolean })[]>`
-    SELECT max_connections, max_tokens, max_members, plan_label, tool_calls_required, recent_history_only
+  const [defaults] = await db<(OrgLimits & { plan_label?: string })[]>`
+    SELECT max_connections, max_tokens, max_members, plan_label, recent_history_only
     FROM app.entitlement_defaults WHERE id = 'new_organization'
   `
   if (!defaults) {

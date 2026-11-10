@@ -223,9 +223,8 @@ characters, or none if Claude gave none) and the client's user agent. Click a to
 used** date to see them, newest first. A member sees the calls of their own
 tokens, an admin those of every token in the organization.
 
-- **Who decides.** An admin turns telemetry on or off under **Team**. It is off
-  by default. On the hosted service's Free plan it is always on and can't be
-  turned off; on Pro it is off by default and the admin's choice.
+- **Who decides.** Tool-call recording is off by default on all plans. An
+  organization admin can set `recordToolCalls` via `PATCH /api/org`.
 - **What it's not.** A reason can mention what someone asked about, and a
   prompt-injected message can make Claude write anything there. So reasons are
   kept only in this app's database, shown as plain text, never written to logs,

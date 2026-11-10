@@ -219,7 +219,6 @@ const meters = computed(() => {
             <li>{{ data.includedSeats }} users included, $10/user/month after</li>
             <li>Full WhatsApp history imported when you link an account</li>
             <li>Unlimited requests</li>
-            <li>Telemetry optional, off by default</li>
           </ul>
         </CardContent>
       </Card>
