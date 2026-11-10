@@ -50,12 +50,12 @@ pnpm cloud:dev        # the hosted-only cloud service, http://localhost:8096
 pnpm cloud:typecheck  # the cloud service; not covered by `pnpm typecheck` either
 pnpm dev              # Nuxt on the host, http://localhost:3000
 pnpm typecheck        # nuxt typecheck across app + server
-pnpm test:emails      # account-email snapshots + rules (node --test; UPDATE_SNAPSHOTS=1 to accept)
+pnpm test:emails      # account-email snapshots and rendering checks
 pnpm build            # production build -> apps/web/.output/
 pnpm services:down / :logs / :ps
 ```
 
-Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services up yourself. No lint config, **no test framework**; `pnpm typecheck` + `pnpm bridge:typecheck` + `pnpm cloud:typecheck` + `pnpm test:emails` (Node's built-in runner over the email templates, nothing else) only automated checks.
+Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services up yourself. There is no lint config or test framework. The automated checks are `pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck` and `pnpm test:emails`.
 
 ## Environment
 
@@ -93,9 +93,8 @@ apps/web/                    Nuxt 4 app. srcDir = app/. Own Dockerfile (context 
                              email-verification, password-reset,
                              mail-format, whatsapp-groups, mfa, totp, webauthn, entitlements,
                              hosted-events, cloud, …
-  server/emails/             account-email templates (layout.ts + account.ts). Not auto-imported;
-                             no Nuxt imports, so test/emails.test.mjs loads them into plain Node
-  public/email/              automata-email-logo.png, the emails' header image
+  server/emails/             account-email templates (layout.ts + account.ts), independent of Nuxt
+  public/dope-icon.png       site icon, also used in account email headers
   shared/connection.ts       InstanceKind, assertNever — imported as #shared
 apps/telegram-bridge/        Telegram MTProto service (teleproto). Own Dockerfile,
                              `telegram` schema of the shared Postgres. See "Telegram bridge".
@@ -485,14 +484,14 @@ Sweep in-process, so **multiple replicas mail multiple times**. `nitro.scheduled
 
 **Account emails are HTML + plain text, from `server/emails/`; alerts stay plain text.** Eight templates in `account.ts` (signup verification, invited signup verification, already registered, email-change verification, email-changed notice, invitation, password reset — self or admin-requested — and password-changed notice), each a list of blocks handed to `renderEmail()` in `layout.ts`, which writes both parts from the same blocks — wording can't drift between them. Callers (`verificationMail()` in `email-verification.ts`, `sendInviteEmail()`, `password-reset.ts`) decide *which* mail and pass values; templates decide only how it reads. Copy = the "Account emails" boards on the Claude Design canvas. Rules easy to undo:
 
-- **Every interpolated value through `escapeHtml()`; subjects and preview through `singleLine()`.** Org and inviter names are user-typed and reach someone else's inbox. `test/emails.test.mjs` pins it with a hostile org name.
-- **Email-safe only:** 600px table, inline styles, no `<style>`/`<link>`/SVG/flex/grid. Lime (`#baf85a`) only as button label on ink — the test counts it.
-- **Company address and "Contact us" in hosted mode only** (`emailBrand()` in `mailer.ts` → `hostedMode()`). A self-hosted install's users aren't ours; there the changed-address notice says "contact an admin of your organization", as it always did.
-- **Logo + Sign in button need `NUXT_PUBLIC_APP_URL`** (absolute URL to `public/email/automata-email-logo.png`); unset → wordmark as text, no button, no links. Never build them from the request, same reason as the verification link.
+- **Escape interpolated HTML with `escapeHtml()` and normalize subjects and previews with `singleLine()`.** Org and inviter names are user-typed and reach someone else's inbox.
+- **Use email-safe markup.** Use a 600px table and inline styles. Avoid `<style>`, `<link>`, SVG, flexbox and grid. Keep lime (`#baf85a`) for button labels on ink.
+- **Company address in hosted mode only** (`emailBrand()` in `mailer.ts` → `hostedMode()`). Security notices direct readers to an admin of their organization.
+- **Icon and Sign in button need `NUXT_PUBLIC_APP_URL`** (absolute URL to `public/dope-icon.png`). The header always shows the DOPE wordmark. Build email URLs from the configured app URL for the same reason as the verification link.
 - **Expiry wording from the TTL constant** (`VERIFICATION_TTL_MS`, `INVITE_TTL_MS` via `durationWords()`), never typed into copy.
 - **Changed-address notice masks the new address** (`maskEmail`): goes to the *old* mailbox, which may no longer be the owner's.
 - **From stays `NUXT_MAIL_FROM_NAME`, never the inviter's name** — anyone who signs up can invite any address; a stranger-chosen name in From on our domain is a phishing kit.
-- Copy change = `UPDATE_SNAPSHOTS=1 pnpm test:emails`, review the `.html` snapshot diff (opens as a page).
+- For copy changes, run `UPDATE_SNAPSHOTS=1 pnpm test:emails` and review the HTML snapshot diff.
 
 ## Unpaired WhatsApp connections are reaped
 

@@ -1,6 +1,6 @@
 import {
   body, button, callout, chipCard, code, divider, durationWords, eyebrow, formatDate, formatDateTime,
-  heading, HOSTED_CONTACT_URL, lead, linkLine, maskEmail, meta, pasteLink, renderEmail, rows, secondary,
+  heading, lead, linkLine, maskEmail, meta, pasteLink, renderEmail, rows, secondary,
   singleLine,
 } from './layout.ts'
 import type { EmailBrand, RenderedEmail } from './layout.ts'
@@ -38,12 +38,12 @@ export function signupVerificationEmail(p: {
   expiresInMs: number
 }, brand: EmailBrand): RenderedEmail {
   return renderEmail({
-    subject: 'Confirm your email for Automata',
+    subject: 'Confirm your email for DOPE',
     preview: `Your code is ${p.code}. Enter it in the browser where you signed up.`,
-    reason: 'You’re getting this because someone signed up for Automata with this address.',
+    reason: 'You’re getting this because someone signed up for DOPE with this address.',
     blocks: [
       heading('Confirm your email.'),
-      lead('Someone signed up for Automata with this address and chose a password for the account. If that was you, enter this code in the browser where you signed up:'),
+      lead('Someone signed up for DOPE with this address and chose a password for the account. If that was you, enter this code in the browser where you signed up:'),
       code(p.code),
       p.url && linkLine('Or open this link in that same browser:', p.url),
       meta(`The code and link expire in ${durationWords(p.expiresInMs)}.`),
@@ -66,7 +66,7 @@ export function invitedSignupVerificationEmail(p: {
   return renderEmail({
     subject: `Confirm your email to join ${org}`,
     preview: `Your code is ${p.code}. Didn’t sign up yourself? Don’t confirm.`,
-    reason: `You’re getting this because this address was invited to ${org} on Automata and someone used the invitation to sign up.`,
+    reason: `You’re getting this because this address was invited to ${org} on DOPE and someone used the invitation to sign up.`,
     blocks: [
       eyebrow(`Joining ${org}`),
       heading(`Confirm your email to join ${org}.`),
@@ -86,12 +86,12 @@ export function invitedSignupVerificationEmail(p: {
 
 export function alreadyRegisteredEmail(brand: EmailBrand): RenderedEmail {
   return renderEmail({
-    subject: 'You already have an Automata account',
+    subject: 'You already have a DOPE account',
     preview: 'Sign in instead, or ignore this if it wasn’t you.',
-    reason: 'You’re getting this because someone tried to sign up for Automata with this address.',
+    reason: 'You’re getting this because someone tried to sign up for DOPE with this address.',
     blocks: [
       heading('You already have an account.'),
-      lead('Someone just tried to sign up for Automata with this email address. It already has an account, so we didn’t create a new one.'),
+      lead('Someone just tried to sign up for DOPE with this email address. It already has an account, so we didn’t create a new one.'),
       brand.appUrl && button('Sign in', `${brand.appUrl}/login`),
       brand.appUrl && secondary({ strong: 'Forgot your password?' }, ' ', { link: 'Reset it here', href: `${brand.appUrl}/forgot-password` }, '.'),
       secondary({ strong: 'Signing up from an invitation?' }, ' Sign in with this address, then open the invitation link again to accept it.'),
@@ -113,10 +113,10 @@ export function emailChangeVerificationEmail(p: {
   return renderEmail({
     subject: 'Confirm your new email address',
     preview: `Your code is ${p.code}. Enter it where you asked for the change.`,
-    reason: 'You’re getting this because someone asked to move an Automata account to this address.',
+    reason: 'You’re getting this because someone asked to move a DOPE account to this address.',
     blocks: [
       heading('Confirm your new email address.'),
-      lead('You asked to change the email on your Automata account to this address.'),
+      lead('You asked to change the email on your DOPE account to this address.'),
       rows([['Current', p.currentEmail], ['New', p.newEmail]]),
       body('To confirm, enter this code in the browser where you asked for the change:'),
       code(p.code),
@@ -135,30 +135,18 @@ export function emailChangedNoticeEmail(p: {
   newEmail: string
   changedAt: Date
 }, brand: EmailBrand): RenderedEmail {
-  // Support means us only on our own deployment; a self-hosted install's
-  // people go to their own admins, as the plain-text notice always said.
-  const help = brand.hosted
-    ? [
-        body({ strong: 'Didn’t make this change?' }, ' Someone may have access to your account. Contact us right away and we’ll help you get it back.'),
-        button('Contact us', HOSTED_CONTACT_URL),
-      ]
-    : [
-        body({ strong: 'Didn’t make this change?' }, ' Someone may have access to your account. Contact an admin of your organization right away.'),
-      ]
   return renderEmail({
-    subject: 'Your Automata email address was changed',
-    preview: brand.hosted
-      ? 'If this wasn’t you, contact us right away.'
-      : 'If this wasn’t you, contact an admin of your organization right away.',
-    reason: `You’re getting this security notice because this address was on an Automata account until ${formatDate(p.changedAt)}. We won’t send anything else here.`,
+    subject: 'Your DOPE email address was changed',
+    preview: 'If this wasn’t you, contact an admin of your organization right away.',
+    reason: `You’re getting this security notice because this address was on a DOPE account until ${formatDate(p.changedAt)}. We won’t send anything else here.`,
     blocks: [
       eyebrow('Security notice'),
       heading('Your email address was changed.'),
-      lead('The email on your Automata account is no longer this address. Sign-in, invitations and connection alerts now go to the new one.'),
+      lead('The email on your DOPE account is no longer this address. Sign-in, invitations and connection alerts now go to the new one.'),
       rows([['From', p.previousEmail], ['To', maskEmail(p.newEmail)], ['When', formatDateTime(p.changedAt)]]),
       body('If you made this change, there’s nothing to do.'),
       divider(),
-      ...help,
+      body({ strong: 'Didn’t make this change?' }, ' Someone may have access to your account. Contact an admin of your organization right away.'),
     ],
   }, brand)
 }
@@ -193,20 +181,20 @@ export function invitationEmail(p: {
   const org = nameOr(p.orgName, 'an organization')
   const card = ROLE_CARD[p.role]
   return renderEmail({
-    subject: `${inviter} invited you to ${org} on Automata`,
+    subject: `${inviter} invited you to ${org} on DOPE`,
     preview: 'Accept to use the connections they share with you.',
-    reason: `You’re getting this because ${inviter} invited this address to ${org} on Automata.`,
+    reason: `You’re getting this because ${inviter} invited this address to ${org} on DOPE.`,
     blocks: [
       eyebrow('Invitation'),
       heading(`${inviter} invited you to ${org}.`),
-      lead(`Automata lets AI tools like Claude reach WhatsApp, Telegram, email and PostgreSQL, limited to the exact chats, folders and tables an admin allows. ${org} uses it, and wants you on board.`),
+      lead(`DOPE lets AI tools like Claude reach WhatsApp, Telegram, email and PostgreSQL, limited to the exact chats, folders and tables an admin allows. ${org} uses it, and wants you on board.`),
       chipCard(card.title, card.text, card.chip),
       button('Accept invitation', p.url),
       pasteLink('Button not working? Paste this link into your browser:', p.url),
       secondary(
         'This invitation is for ',
         { strong: p.email },
-        `. Sign in or sign up with that address to accept it; it won’t work for anyone else. It expires in ${durationWords(p.expiresInMs)}. Already in another organization on Automata? Accepting moves you to ${org}.`,
+        `. Sign in or sign up with that address to accept it; it won’t work for anyone else. It expires in ${durationWords(p.expiresInMs)}. Already in another organization on DOPE? Accepting moves you to ${org}.`,
       ),
       divider(),
       secondary('Not expecting this? You can ignore it. Nothing happens unless you accept.'),
@@ -233,18 +221,18 @@ export function passwordResetEmail(p: {
   // The link works in any browser; the code needs the reset page and the address.
   const codeIntro = p.url
     ? body('Or enter this code on the password reset page:')
-    : body('Enter this code on the Automata sign-in page, under “Forgot password?”, with this email address:')
+    : body('Enter this code on the DOPE sign-in page, under “Forgot password?”, with this email address:')
 
   if (p.requestedBy) {
     const org = nameOr(p.requestedBy.orgName, 'your organization')
     return renderEmail({
       subject: `An admin of ${org} sent you a password reset`,
       preview: `Your code is ${p.code}. Only you can choose the new password.`,
-      reason: `You’re getting this because an admin of ${org} on Automata asked to send a password reset to this address.`,
+      reason: `You’re getting this because an admin of ${org} on DOPE asked to send a password reset to this address.`,
       blocks: [
         eyebrow(`Requested by ${org}`),
         heading('Choose a new password.'),
-        lead(`An admin of the organization “${org}” asked Automata to send you a password reset. They can’t see this code or link, and they can’t choose your password. Only you can, from this email.`),
+        lead(`An admin of the organization “${org}” asked DOPE to send you a password reset. They can’t see this code or link, and they can’t choose your password. Only you can, from this email.`),
         p.url && button('Choose a new password', p.url),
         codeIntro,
         code(p.code),
@@ -256,12 +244,12 @@ export function passwordResetEmail(p: {
   }
 
   return renderEmail({
-    subject: 'Reset your Automata password',
+    subject: 'Reset your DOPE password',
     preview: `Your code is ${p.code}. Didn’t ask for it? Ignore this email.`,
-    reason: 'You’re getting this because someone asked to reset the password of the Automata account at this address.',
+    reason: 'You’re getting this because someone asked to reset the password of the DOPE account at this address.',
     blocks: [
       heading('Reset your password.'),
-      lead('Someone asked to reset the password of the Automata account at this address. If that was you, choose a new one:'),
+      lead('Someone asked to reset the password of the DOPE account at this address. If that was you, choose a new one:'),
       p.url && button('Choose a new password', p.url),
       codeIntro,
       code(p.code),
@@ -281,23 +269,12 @@ export function passwordChangedNoticeEmail(p: {
   how: 'reset' | 'profile'
 }, brand: EmailBrand): RenderedEmail {
   const what = p.how === 'reset'
-    ? 'The password of your Automata account was reset with a code or link sent to this address. Every browser signed in to the account was signed out.'
-    : 'The password of your Automata account was changed from its profile page. Every other browser signed in to the account was signed out.'
-  // Support means us only on our own deployment, as in the email-changed notice.
-  const help = brand.hosted
-    ? [
-        body({ strong: 'Didn’t make this change?' }, ' Someone may have access to your email or your account. Contact us right away and we’ll help you get it back.'),
-        button('Contact us', HOSTED_CONTACT_URL),
-      ]
-    : [
-        body({ strong: 'Didn’t make this change?' }, ' Someone may have access to your email or your account. Contact an admin of your organization right away.'),
-      ]
+    ? 'The password of your DOPE account was reset with a code or link sent to this address. Every browser signed in to the account was signed out.'
+    : 'The password of your DOPE account was changed from its profile page. Every other browser signed in to the account was signed out.'
   return renderEmail({
-    subject: 'Your Automata password was changed',
-    preview: brand.hosted
-      ? 'If this wasn’t you, contact us right away.'
-      : 'If this wasn’t you, contact an admin of your organization right away.',
-    reason: 'You’re getting this security notice because the password of the Automata account at this address changed.',
+    subject: 'Your DOPE password was changed',
+    preview: 'If this wasn’t you, contact an admin of your organization right away.',
+    reason: 'You’re getting this security notice because the password of the DOPE account at this address changed.',
     blocks: [
       eyebrow('Security notice'),
       heading('Your password was changed.'),
@@ -305,7 +282,7 @@ export function passwordChangedNoticeEmail(p: {
       rows([['Account', p.email], ['When', formatDateTime(p.changedAt)]]),
       body('If you made this change, there’s nothing to do. Connector tokens keep working: a password change doesn’t revoke them. Revoke one from its connection’s page if you think it has leaked.'),
       divider(),
-      ...help,
+      body({ strong: 'Didn’t make this change?' }, ' Someone may have access to your email or your account. Contact an admin of your organization right away.'),
     ],
   }, brand)
 }

@@ -17,14 +17,14 @@ import {
   invitationEmail, invitedSignupVerificationEmail, passwordChangedNoticeEmail,
   passwordResetEmail, signupVerificationEmail,
 } from '../server/emails/account.ts'
-import { COMPANY_ADDRESS, HOSTED_CONTACT_URL, maskEmail } from '../server/emails/layout.ts'
+import { COMPANY_ADDRESS, maskEmail } from '../server/emails/layout.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const snapshotDir = join(here, '__snapshots__', 'emails')
 const update = process.env.UPDATE_SNAPSHOTS === '1'
 
-const hosted = { appUrl: 'https://mcp.getautomata.app', hosted: true }
-const selfHosted = { appUrl: 'https://automata.example.com', hosted: false }
+const hosted = { appUrl: 'https://dope.example.com', hosted: true }
+const selfHosted = { appUrl: 'https://dope-self-hosted.example.com', hosted: false }
 const noAppUrl = { hosted: false }
 
 const VERIFY_TTL = 30 * 60 * 1000
@@ -65,7 +65,8 @@ function matchSnapshot(file, actual) {
     writeFileSync(path, actual)
     return
   }
-  assert.equal(actual, readFileSync(path, 'utf8'), `${file} differs from its snapshot (UPDATE_SNAPSHOTS=1 to accept)`)
+  const expected = readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+  assert.equal(actual, expected, `${file} differs from its snapshot (UPDATE_SNAPSHOTS=1 to accept)`)
 }
 
 /** The HTML's visible text, for comparing wording with the plain-text part. */
@@ -121,19 +122,20 @@ for (const [name, mail] of Object.entries(cases)) {
   })
 }
 
-test('footer: company address and contact link in hosted mode only', () => {
+test('footer: company address in hosted mode only', () => {
   for (const [name, mail] of Object.entries(cases)) {
     const isHosted = !name.includes('self-hosted') && !name.includes('no-app-url')
     assert.equal(mail.html.includes(COMPANY_ADDRESS.replace(/&/g, '&amp;')), isHosted, name)
     assert.equal(mail.text.includes(COMPANY_ADDRESS), isHosted, name)
   }
-  assert.ok(cases['4-email-changed-notice'].html.includes(HOSTED_CONTACT_URL))
-  assert.ok(!cases['4-email-changed-notice-self-hosted'].html.includes('getautomata.app'))
+  assert.ok(cases['4-email-changed-notice'].text.includes('Contact an admin of your organization'))
   assert.ok(cases['4-email-changed-notice-self-hosted'].text.includes('Contact an admin of your organization'))
 })
 
-test('logo: absolute URL from the app URL, 150px wide, alt Automata; wordmark text without one', () => {
-  assert.ok(cases['1a-signup-verification'].html.includes('<img src="https://mcp.getautomata.app/email/automata-email-logo.png" width="150" height="36" alt="Automata"'))
+test('header: DOPE wordmark and icon from the configured app URL', () => {
+  assert.ok(cases['1a-signup-verification'].html.includes(`<img src="${hosted.appUrl}/dope-icon.png" width="36" height="36" alt=""`))
+  assert.ok(cases['1a-signup-verification'].html.includes('>DOPE</span>'))
+  assert.ok(cases['1a-signup-verification-no-app-url'].html.includes('>DOPE</span>'))
   assert.ok(!cases['1a-signup-verification-no-app-url'].html.includes('<img'))
   assert.ok(!cases['1a-signup-verification-no-app-url'].html.includes('href='))
   assert.ok(!cases['2-already-registered-no-app-url'].html.includes('href='))
@@ -177,13 +179,13 @@ test('expiry wording comes from the TTL', () => {
 
 test('already registered: "Forgot your password?" links to the reset page, only with an app URL', () => {
   const mail = cases['2-already-registered']
-  assert.ok(mail.html.includes('href="https://mcp.getautomata.app/forgot-password"'))
-  assert.ok(mail.text.includes('Forgot your password? Reset it here <https://mcp.getautomata.app/forgot-password>.'))
+  assert.ok(mail.html.includes(`href="${hosted.appUrl}/forgot-password"`))
+  assert.ok(mail.text.includes(`Forgot your password? Reset it here <${hosted.appUrl}/forgot-password>.`))
   assert.ok(!cases['2-already-registered-no-app-url'].text.includes('Forgot your password?'))
 })
 
 test('password reset: link from the app URL only, code always; admin mail names the org, never the admin', () => {
-  assert.ok(cases['6a-password-reset'].html.includes('href="https://mcp.getautomata.app/reset-password?token=SAMPLE-link-token"'))
+  assert.ok(cases['6a-password-reset'].html.includes(`href="${resetLink(hosted)}"`))
   for (const name of ['6a-password-reset', '6a-password-reset-no-app-url', '6b-password-reset-by-admin']) {
     assert.ok(cases[name].text.includes('    123456'), name)
   }
@@ -199,9 +201,8 @@ test('password reset: link from the app URL only, code always; admin mail names 
   assert.ok(!hostile.html.includes('<b>'))
 })
 
-test('password-changed notice: contact link in hosted mode only, says tokens keep working', () => {
-  assert.ok(cases['7-password-changed-notice'].html.includes(HOSTED_CONTACT_URL))
-  assert.ok(!cases['7-password-changed-notice-self-hosted'].html.includes('getautomata.app'))
+test('password-changed notice: directs readers to their admin and says tokens keep working', () => {
+  assert.ok(cases['7-password-changed-notice'].text.includes('Contact an admin of your organization'))
   assert.ok(cases['7-password-changed-notice-self-hosted'].text.includes('Contact an admin of your organization'))
   assert.ok(cases['7-password-changed-notice'].text.includes('Every browser signed in to the account was signed out.'))
   assert.ok(cases['7-password-changed-notice-self-hosted'].text.includes('Every other browser'))

@@ -6,8 +6,8 @@
  * alternative from the same blocks, so the two cannot say different things.
  *
  * Email-safe on purpose: tables for layout, every style inline, no SVG, no
- * flexbox or grid, no stylesheet. Colours and type are the Automata design
- * system's tokens. Lime appears only as a button label on ink.
+ * flexbox or grid, no stylesheet. Colours and type match the web app.
+ * Lime appears only as a button label on ink.
  *
  * **Every value goes through `escapeHtml()`.** Organization names, inviter
  * names and addresses are typed by users; one that reaches the HTML raw is
@@ -39,16 +39,14 @@ const MONO = `'JetBrains Mono', Menlo, Consolas, 'Courier New', monospace`
 
 /** Shown in the footer of hosted deployments only; a self-hosted install is not ours. */
 export const COMPANY_ADDRESS = 'Operational Intelligence Inc. · 418 Broadway #6722 · Albany, NY 12207, USA'
-/** Where the email-changed notice sends someone who did not make the change, in hosted mode. */
-export const HOSTED_CONTACT_URL = 'https://www.getautomata.app/contact'
 /** Served from `apps/web/public/`, reached through `NUXT_PUBLIC_APP_URL`. */
-export const LOGO_PATH = '/email/automata-email-logo.png'
+export const LOGO_PATH = '/dope-icon.png'
 
 /** What differs between deployments, read once by the caller (`emailBrand()` in mailer.ts). */
 export interface EmailBrand {
   /** `NUXT_PUBLIC_APP_URL`, no trailing slash. Unset: no logo image, no links built from it. */
   appUrl?: string
-  /** Hosted mode: the footer carries the company address, and support means us. */
+  /** Hosted mode: the footer carries the company address. */
   hosted: boolean
 }
 
@@ -315,10 +313,13 @@ function preheader(preview: string): string {
 }
 
 function header(brand: EmailBrand): string {
+  const wordmark = `<span style="${font(20, '36px', 600, `letter-spacing:-0.4px;color:${color.ivory}`)}">DOPE</span>`
   const mark = brand.appUrl
-    ? `<img src="${escapeHtml(`${brand.appUrl}${LOGO_PATH}`)}" width="150" height="36" alt="Automata" `
-      + `style="display:block;width:150px;height:auto;border:0;outline:none;text-decoration:none;${font(20, '36px', 600, `color:${color.ivory}`)}">`
-    : `<span style="${font(20, '36px', 600, `letter-spacing:-0.4px;color:${color.ivory}`)}">Automata</span>`
+    ? '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
+      + `<td valign="middle" style="padding-right:10px"><img src="${escapeHtml(`${brand.appUrl}${LOGO_PATH}`)}" `
+      + 'width="36" height="36" alt="" style="display:block;border:0"></td>'
+      + `<td valign="middle">${wordmark}</td></tr></table>`
+    : wordmark
   return `<tr><td style="background:${color.ink};padding:22px 40px">${mark}</td></tr>`
 }
 

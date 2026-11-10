@@ -83,7 +83,7 @@ services:
       NUXT_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       NUXT_SMTP_TLS: ${SMTP_TLS:-false}
       NUXT_MAIL_FROM: ${MAIL_FROM:-}
-      NUXT_MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Automata MCP}
+      NUXT_MAIL_FROM_NAME: ${MAIL_FROM_NAME:-DOPE}
 
   redis:
     image: redis:8.2.9-alpine

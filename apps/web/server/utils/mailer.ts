@@ -52,8 +52,8 @@ function mailTransport(): Transporter | undefined {
 /**
  * What the account-email templates need to know about this deployment. The
  * logo and any link built here need `NUXT_PUBLIC_APP_URL`; without it the
- * header shows the wordmark as text. The company address and "contact us"
- * appear in hosted mode only — a self-hosted install's users are not ours.
+ * header shows the wordmark as text. The company address appears in hosted
+ * mode only.
  */
 export function emailBrand(): EmailBrand {
   const appUrl = String(useRuntimeConfig().public.appUrl ?? '').trim().replace(/\/+$/, '')

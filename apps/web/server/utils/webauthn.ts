@@ -28,7 +28,7 @@ import type { LoginChallenge } from './mfa'
  * finish what the first started.
  */
 
-const RP_NAME = 'Automata'
+const RP_NAME = 'DOPE'
 const REGISTRATION_TTL_MS = 5 * 60 * 1000
 
 interface RelyingParty {

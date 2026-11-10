@@ -81,7 +81,7 @@ export function assertOwnServersAllowed(what: 'Evolution server' | 'Telegram bri
   if (ownServersAllowed()) return
   console.warn(`[cloud] refused a bring-your-own ${what} for org ${org}: not available on the hosted service`)
   const message = `Your own ${what} isn't available on the hosted service. Use the one provided, `
-    + 'or self-host Automata to bring your own.'
+    + 'or self-host DOPE to bring your own.'
   throw createError({ statusCode: 422, statusMessage: message, message })
 }
 

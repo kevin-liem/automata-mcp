@@ -95,7 +95,7 @@ export default defineNuxtConfig({
     smtpPassword: '',
     smtpTls: 'false',
     mailFrom: '',
-    mailFromName: 'Automata MCP',
+    mailFromName: 'DOPE',
     // Where a WhatsApp reconnect loop on the deployment's own Evolution server
     // is reported, since only whoever runs that service can end it. Optional:
     // empty sends no operator mail. On the hosted offering, setting it is what

@@ -144,7 +144,7 @@ async function submit() {
         <span class="font-medium">Free, open source</span>
       </div>
       <p class="mt-1 text-muted-foreground">
-        Run Automata on your own infrastructure with no plan limits.
+        Run DOPE on your own infrastructure with no plan limits.
         Get the code on
         <a href="https://github.com/ju-li/automata-mcp" target="_blank" rel="noopener noreferrer" class="text-foreground underline underline-offset-4">GitHub</a>
         or deploy it in one click with the

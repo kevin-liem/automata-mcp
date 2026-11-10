@@ -3,7 +3,7 @@ Preview: Your code is 123456. Enter it where you asked for the change.
 
 Confirm your new email address.
 
-You asked to change the email on your Automata account to this address.
+You asked to change the email on your DOPE account to this address.
 
 Current: old@example.com
 New: new@example.com
@@ -13,7 +13,7 @@ To confirm, enter this code in the browser where you asked for the change:
     123456
 
 Or open this link in the browser where you asked for the change:
-https://mcp.getautomata.app/verify-email?token=SAMPLE-link-token
+https://dope.example.com/verify-email?token=SAMPLE-link-token
 
 The code and link expire in 30 minutes. Until you confirm, your account keeps using your current address.
 
@@ -22,5 +22,5 @@ The code and link expire in 30 minutes. Until you confirm, your account keeps us
 Didn’t ask for this? Don’t enter the code. Ignore this email and nothing changes.
 
 --
-You’re getting this because someone asked to move an Automata account to this address.
+You’re getting this because someone asked to move a DOPE account to this address.
 Operational Intelligence Inc. · 418 Broadway #6722 · Albany, NY 12207, USA

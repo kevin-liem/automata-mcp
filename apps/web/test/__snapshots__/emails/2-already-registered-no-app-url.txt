@@ -1,9 +1,9 @@
-Subject: You already have an Automata account
+Subject: You already have a DOPE account
 Preview: Sign in instead, or ignore this if it wasn’t you.
 
 You already have an account.
 
-Someone just tried to sign up for Automata with this email address. It already has an account, so we didn’t create a new one.
+Someone just tried to sign up for DOPE with this email address. It already has an account, so we didn’t create a new one.
 
 Signing up from an invitation? Sign in with this address, then open the invitation link again to accept it.
 
@@ -12,4 +12,4 @@ Signing up from an invitation? Sign in with this address, then open the invitati
 Wasn’t you? You can safely ignore this email. Nothing on your account has changed.
 
 --
-You’re getting this because someone tried to sign up for Automata with this address.
+You’re getting this because someone tried to sign up for DOPE with this address.

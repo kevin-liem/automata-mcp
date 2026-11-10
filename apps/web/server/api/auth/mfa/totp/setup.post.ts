@@ -32,7 +32,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 409, statusMessage: 'An authenticator app is already set up. Remove it first.' })
   }
 
-  const uri = totpUri(secret, user.email, 'Automata')
+  const uri = totpUri(secret, user.email, 'DOPE')
   const svg = await QRCode.toString(uri, { type: 'svg', margin: 1 })
   return {
     secret,

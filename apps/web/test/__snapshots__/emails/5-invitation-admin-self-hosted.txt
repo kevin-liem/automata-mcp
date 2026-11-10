@@ -1,25 +1,25 @@
-Subject: Jane Doe invited you to Acme on Automata
+Subject: Jane Doe invited you to Acme on DOPE
 Preview: Accept to use the connections they share with you.
 
 INVITATION
 
 Jane Doe invited you to Acme.
 
-Automata lets AI tools like Claude reach WhatsApp, Telegram, email and PostgreSQL, limited to the exact chats, folders and tables an admin allows. Acme uses it, and wants you on board.
+DOPE lets AI tools like Claude reach WhatsApp, Telegram, email and PostgreSQL, limited to the exact chats, folders and tables an admin allows. Acme uses it, and wants you on board.
 
 You’ll join as an Admin
 Manage the organization: invite people, create connections, assign them and mint tokens.
 
-Accept invitation: https://automata.example.com/invite/waorg_SAMPLE
+Accept invitation: https://dope-self-hosted.example.com/invite/waorg_SAMPLE
 
 Button not working? Paste this link into your browser:
-https://automata.example.com/invite/waorg_SAMPLE
+https://dope-self-hosted.example.com/invite/waorg_SAMPLE
 
-This invitation is for invitee@example.com. Sign in or sign up with that address to accept it; it won’t work for anyone else. It expires in 14 days. Already in another organization on Automata? Accepting moves you to Acme.
+This invitation is for invitee@example.com. Sign in or sign up with that address to accept it; it won’t work for anyone else. It expires in 14 days. Already in another organization on DOPE? Accepting moves you to Acme.
 
 ---
 
 Not expecting this? You can ignore it. Nothing happens unless you accept.
 
 --
-You’re getting this because Jane Doe invited this address to Acme on Automata.
+You’re getting this because Jane Doe invited this address to Acme on DOPE.

@@ -10,7 +10,7 @@ Someone signed up with this address to join the organization “Acme” as an ad
     123456
 
 Or open this link in that same browser:
-https://mcp.getautomata.app/verify-email?token=SAMPLE-link-token
+https://dope.example.com/verify-email?token=SAMPLE-link-token
 
 The code and link expire in 30 minutes.
 
@@ -18,5 +18,5 @@ Didn’t sign up yourself? Don’t confirm.
 Someone holding your invitation link may be trying to join as you. Ignore this email and tell whoever invited you.
 
 --
-You’re getting this because this address was invited to Acme on Automata and someone used the invitation to sign up.
+You’re getting this because this address was invited to Acme on DOPE and someone used the invitation to sign up.
 Operational Intelligence Inc. · 418 Broadway #6722 · Albany, NY 12207, USA

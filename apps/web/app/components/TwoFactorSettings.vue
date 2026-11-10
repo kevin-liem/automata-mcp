@@ -155,10 +155,10 @@ async function copyCodes() {
 
 function downloadCodes() {
   if (!recoveryCodes.value) return
-  const blob = new Blob([`Automata recovery codes\n\n${recoveryCodes.value.join('\n')}\n`], { type: 'text/plain' })
+  const blob = new Blob([`DOPE recovery codes\n\n${recoveryCodes.value.join('\n')}\n`], { type: 'text/plain' })
   const link = document.createElement('a')
   link.href = URL.createObjectURL(blob)
-  link.download = 'automata-recovery-codes.txt'
+  link.download = 'dope-recovery-codes.txt'
   link.click()
   URL.revokeObjectURL(link.href)
 }

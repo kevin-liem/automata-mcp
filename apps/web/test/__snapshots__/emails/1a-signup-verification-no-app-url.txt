@@ -1,9 +1,9 @@
-Subject: Confirm your email for Automata
+Subject: Confirm your email for DOPE
 Preview: Your code is 123456. Enter it in the browser where you signed up.
 
 Confirm your email.
 
-Someone signed up for Automata with this address and chose a password for the account. If that was you, enter this code in the browser where you signed up:
+Someone signed up for DOPE with this address and chose a password for the account. If that was you, enter this code in the browser where you signed up:
 
     123456
 
@@ -14,4 +14,4 @@ The code and link expire in 30 minutes.
 Didn’t sign up? Don’t enter the code. Ignore this email and no account is confirmed.
 
 --
-You’re getting this because someone signed up for Automata with this address.
+You’re getting this because someone signed up for DOPE with this address.

@@ -137,7 +137,7 @@ NUXT_SMTP_USERNAME=<username>
 NUXT_SMTP_PASSWORD=<password>
 NUXT_SMTP_TLS=false          # false = STARTTLS on 587; true = implicit TLS on 465
 NUXT_MAIL_FROM=<a from address the provider will accept>
-NUXT_MAIL_FROM_NAME=Automata MCP
+NUXT_MAIL_FROM_NAME=DOPE
 
 # Checked on both Evolution's and the Telegram bridge's webhooks
 NUXT_WEBHOOK_SECRET=<openssl rand -hex 32>
