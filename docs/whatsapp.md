@@ -3,11 +3,10 @@
 ## Reading and searching messages
 
 `NUXT_EVOLUTION_DATABASE_URL` is **required** for accounts on this deployment's
-Evolution server. Both `read-messages` and `search-messages` read Evolution's
-Postgres directly, and neither can answer without it — pairing, `list-chats` and
-`send-text-message` still work, and the app says so once at startup. It is the one
-part of this app that does not go through the Evolution API, for two separate
-reasons.
+Evolution server. `read-messages` and `search-messages` read Evolution's Postgres
+directly, and `get-whatsapp-media` uses it to look up the requested message.
+Pairing, `list-chats` and `send-text-message` still work without it. The app
+reports the missing setting at startup.
 
 **Searching.** Evolution 2.3.7 cannot search message content. `POST
 /chat/findMessages` accepts a `where.message` — its request schema even documents
@@ -176,6 +175,18 @@ Worth knowing before you go looking for a bug:
 On Railway, Evolution's Postgres is its own service — use its private URL, and
 note the port there is whatever that service actually listens on (see "Pin the
 ports").
+
+## Retrieving media
+
+Call `get-whatsapp-media` with the chat's `jid` and pass the message's `id` as
+`messageId`. Both values come from `read-messages` or `search-messages`. A token
+with an explicit tool allowlist must include `get-whatsapp-media`, and the chat
+must be within the token's scope.
+
+The tool fetches one image, video or voice recording on demand, up to 10 MiB.
+Common image formats and audio come back as MCP media. Videos come back as
+embedded files. Preview and export depend on the MCP client. Older attachments
+can expire even when the message still appears in history.
 
 ## Chats addressed by LID (`…@lid`)
 
@@ -369,8 +380,8 @@ import carries on in Evolution either way, and the dashboard counts catch up.
 
 Caveats worth knowing before you rely on it:
 
-- **Media is not downloaded.** History gives message records; the bytes still need
-  `getBase64FromMediaMessage` per message.
+- **Media is fetched on demand.** History import stores the message records.
+  Use [`get-whatsapp-media`](#retrieving-media) to fetch an available attachment.
 - **Depth is whatever the phone volunteers.** `syncFullHistory` asks for
   everything; it is not a guarantee of everything.
 - **Groups come too.** `syncFullHistory` overrides Evolution's group filter, so

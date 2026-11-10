@@ -1168,7 +1168,7 @@ interface NormalizedMessage {
  * So `total` counts rows this function then discards, and the count is reported
  * rather than subtracted — see `MessagePage`.
  */
-function classifyContent(message: unknown, messageType?: string): NormalizedMessage {
+export function classifyContent(message: unknown, messageType?: string): NormalizedMessage {
   let payload = asRecord(message)
 
   // Nothing to read: the type hint is all there is, and the only hint meaning

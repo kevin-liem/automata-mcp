@@ -208,6 +208,43 @@
       }
     },
     {
+      "name": "get-whatsapp-media",
+      "title": "Get WhatsApp media",
+      "description": "[WhatsApp] Download one image, video or voice recording from an in-scope WhatsApp chat. Pass the chat `jid` and the message `id` as `messageId` from read-messages or search-messages. Images and audio are returned as MCP media when supported by their format, and videos are returned as embedded files. Files over 10 MiB are refused. Older attachments may have expired from WhatsApp.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The full chat JID, exactly as returned by read-messages or search-messages"
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The media message ID from read-messages or search-messages"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "One sentence: why you are calling this tool, i.e. what the user asked for. Do not include names, contact details, message text or other personal data."
+          }
+        },
+        "required": [
+          "jid",
+          "messageId"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
       "name": "list-chats",
       "title": "List WhatsApp chats",
       "description": "[WhatsApp] List recent WhatsApp conversations, most recently active first, with the `jid` needed by read-messages. Includes conversations imported from the phone when the account was paired, not only ones active since. If this connector is scoped to specific chats, only those are listed. This answers with one page, most recently active first: when `hasMore` is true there are older conversations it did not include, so do not report the list as complete or conclude that a chat does not exist — search-messages finds a conversation by what was said in it.",
