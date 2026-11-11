@@ -26,7 +26,9 @@ let record, instance, file, downloads, refusal, publicUrl
 const sql = async (strings, ...values) => {
   const query = strings.join('?')
   if (query.includes('SELECT token_hash FROM app.mcp_tokens')) {
-    return record && record.id === values[0] && (!query.includes('revoked = false') || !record.revoked)
+    return record && record.id === values[0]
+      && (!query.includes('token_hash =') || record.token_hash === values[1])
+      && (!query.includes('revoked = false') || (!record.revoked && (!record.expires_at || Date.parse(record.expires_at) > Date.now())))
       ? [{ token_hash: record.token_hash }] : []
   }
   if (query.includes('FROM app.mcp_tokens t')) return record?.token_hash === values[0] ? [record] : []
@@ -41,6 +43,8 @@ Object.assign(globalThis, {
   instanceKind: value => value.kind,
   authorizesInstance: (member, org, assigned) => member.orgId === org && (member.role === 'admin' || assigned),
   credentialsForInstance: value => ({ baseUrl: value.base_url, apiKey: value.api_key }),
+  telegramCredentialsForInstance: value => value.base_url && value.api_key && value.instance_id
+    ? { baseUrl: value.base_url, apiKey: value.api_key, sessionId: value.instance_id, userSupplied: true } : undefined,
   scopeFromRecord: value => ({ allChats: value.all_chats, chatJids: value.chat_jids, allTools: value.all_tools, toolNames: value.tool_names }),
   getRequestHeader: (event, name) => event.headers?.[name],
   getRouterParam: (event, name) => event.params?.[name],
@@ -63,7 +67,7 @@ Object.assign(globalThis, {
   setHeader: (event, name, value) => event.responseHeaders.set(name.toLowerCase(), String(value)),
   send: (_event, data) => data,
 })
-const { default: download } = await import('../server/api/media/whatsapp/[grant].get.ts')
+const { default: download } = await import('../server/api/media/whatsapp/[grant].ts')
 
 beforeEach(() => {
   record = {
@@ -71,7 +75,7 @@ beforeEach(() => {
     revoked: false, user_email: 'owner@example.test', member_role: 'admin', member_org: 'org-1', assigned: false,
     all_chats: false, chat_jids: [jid], all_tools: false, tool_names: ['get-whatsapp-media'],
   }
-  instance = { id: 'connection-1', org: 'org-1', kind: 'whatsapp', base_url: 'https://evolution.example', api_key: 'private-test-key' }
+  instance = { id: 'connection-1', org: 'org-1', kind: 'whatsapp', base_url: 'https://evolution.example', api_key: 'private-test-key', instance_id: 'session-1' }
   file = { data: original, filename: 'voice 日本語.oga', mimeType: 'audio/ogg' }
   downloads = 0
   refusal = undefined
@@ -82,7 +86,7 @@ function claims(expiresAt = Date.now() + MEDIA_DOWNLOAD_TTL_MS) {
   return { tokenId: record.id, jid, messageId, sha256, expiresAt }
 }
 function grant() { return signMediaDownloadGrant(claims(), record.token_hash) }
-function event(value = grant()) { return { context: {}, params: { grant: value }, responseHeaders: new Map() } }
+function event(value = grant()) { return { method: 'GET', context: {}, params: { grant: value }, responseHeaders: new Map() } }
 
 test('a file grant binds the token, chat, message, checksum and short expiry', () => {
   const now = 1_000_000
@@ -131,6 +135,33 @@ test('a valid link downloads the original file without an MCP bearer or browser 
   assert.equal(request.responseHeaders.get('x-content-type-options'), 'nosniff')
 })
 
+test('HEAD uses the authenticated file handler and other methods are rejected before download', async () => {
+  const request = event()
+  request.method = 'HEAD'
+  await download(request)
+  assert.equal(request.responseHeaders.get('content-type'), 'audio/ogg')
+  assert.equal(request.responseHeaders.get('content-length'), String(original.length))
+  const before = downloads
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    const unsupported = event()
+    unsupported.method = method
+    await assert.rejects(download(unsupported), { statusCode: 405 })
+    assert.equal(unsupported.responseHeaders.get('allow'), 'GET, HEAD')
+  }
+  assert.equal(downloads, before)
+})
+
+test('an in-flight request cannot mint a link under a rotated or expired credential', async () => {
+  const { auth } = await resolveMediaDownloadAuth(grant())
+  const authenticatedHash = record.token_hash
+  record.token_hash = 'f'.repeat(64)
+  assert.equal(auth.credentialHash, authenticatedHash)
+  await assert.rejects(createWhatsAppMediaDownload(auth, jid, messageId, sha256), { statusCode: 401 })
+  record.token_hash = authenticatedHash
+  record.expires_at = new Date(Date.now() - 1000).toISOString()
+  await assert.rejects(createWhatsAppMediaDownload(auth, jid, messageId, sha256), { statusCode: 401 })
+})
+
 test('download grants use the same live account authorization as ordinary MCP requests', async () => {
   const normal = await resolveMcpAuth({ headers: { authorization: `Bearer ${rawToken}` } })
   const linked = await resolveMediaDownloadAuth(grant())
@@ -138,6 +169,45 @@ test('download grants use the same live account authorization as ordinary MCP re
   const signed = grant()
   record.member_org = 'other-org'
   assert.equal(await resolveMediaDownloadAuth(signed), undefined)
+})
+
+test('existing Bearer, bare-token and path-token authentication keep working without a session fallback', async () => {
+  for (const request of [
+    { headers: { authorization: `Bearer ${rawToken}` } },
+    { headers: { authorization: rawToken } },
+    { params: { token: encodeURIComponent(rawToken) } },
+  ]) {
+    const auth = await resolveMcpAuth(request)
+    assert.equal(auth.tokenId, record.id)
+    assert.equal(auth.credentialHash, record.token_hash)
+  }
+  assert.equal(await resolveMcpAuth({ headers: { cookie: 'some-browser-session' } }), undefined)
+  assert.equal(await resolveMcpAuth({ headers: { authorization: 'Basic invalid' }, params: { token: rawToken } }), undefined)
+})
+
+test('shared authentication still resolves PostgreSQL, Telegram and IMAP accounts and denies their media grants', async () => {
+  instance.dsn = 'postgres://test-only/database'
+  instance.imap_host = 'imap.example'
+  instance.imap_user = 'test@example.test'
+  for (const kind of ['postgres', 'telegram', 'imap']) {
+    instance.kind = kind
+    const auth = await resolveMcpAuth({ headers: { authorization: `Bearer ${rawToken}` } })
+    assert.equal(auth.kind, kind)
+    assert.equal(auth.tokenId, record.id)
+    assert.equal(auth.evolution, undefined)
+    await assert.rejects(download(event()), { statusCode: 403 })
+  }
+  assert.equal(downloads, 0)
+})
+
+test('download response headers safely handle untrusted filenames and MIME values', async () => {
+  file.filename = 'voice"\r\nInjected: bad\u0000日本語.oga'
+  file.mimeType = 'audio/ogg\r\nInjected: bad'
+  const request = event()
+  await download(request)
+  assert.equal(request.responseHeaders.get('content-type'), 'application/octet-stream')
+  assert.doesNotMatch(request.responseHeaders.get('content-disposition'), /[\r\n\u0000]/)
+  assert.match(request.responseHeaders.get('content-disposition'), /%22/)
 })
 
 test('revoked, expired, rotated or deleted tokens invalidate a previously issued link', async () => {

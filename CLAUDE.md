@@ -275,12 +275,14 @@ Deliberate non-goals, not oversights: deletion dropped like any control record, 
 **WhatsApp media downloads:** `get-whatsapp-media` defaults to `delivery: auto`:
 five-minute file-only HTTPS links plus metadata; image previews stay inline.
 `whatsapp-media.ts` is the shared scoped/size-capped downloader for the tool and
-`api/media/whatsapp/[grant].get.ts`. Grants are signed with a domain-separated
+`api/media/whatsapp/[grant].ts` (GET/HEAD only). Grants are signed with a domain-separated
 HMAC over the token ID, chat, message, checksum and expiry, keyed by the stored
 token hash. `resolveMediaDownloadAuth` verifies the grant before using the same
 live authorization path as MCP; tool/chat scope and plan limits are checked on
 GET too. Never put the raw MCP token in a file link, skip current authorization,
-or log the grant path. Rotation changes the signing key. No media is persisted.
+or log the grant path. Link creation must match `auth.credentialHash` against the
+current active token so an in-flight pre-rotation call cannot sign with the new
+credential. Rotation changes the signing key. No media is persisted.
 Native, embedded-file and bounded base64 modes remain explicit compatibility
 options; ordinary users must not need format/offset prompts.
 

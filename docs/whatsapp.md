@@ -206,6 +206,8 @@ clickable link. A supported image also has an inline preview; other files have
 an MCP `resource_link` with the same HTTPS URL, filename, MIME type and size.
 The full file downloads through HTTP with its filename and MIME headers,
 without sending base64 through the model's context.
+`HEAD` requests return the same authenticated file headers without a body;
+other HTTP methods are rejected with 405.
 
 Links last at most five minutes and grant access to **one exact attachment**.
 The original MCP bearer token is never put in the URL. Every download verifies

@@ -27,6 +27,8 @@ interface McpAuthBase {
   user: AppUser
   instance: AppInstance
   tokenId: string
+  /** Internal credential revision; never returned to a client. */
+  credentialHash: string
   /** Which chats, tables and tools this token may reach. See mcp-scope.ts. */
   scope: McpScope
   /**
@@ -264,6 +266,7 @@ async function resolveMcpAuthHash(hash: string): Promise<McpAuth | undefined> {
     user,
     instance,
     tokenId: record.id,
+    credentialHash: hash,
     scope: scopeFromRecord(record),
     sendDisclaimer: record.send_disclaimer || undefined,
     limits: { max_connections: record.max_connections, max_tokens: record.max_tokens },

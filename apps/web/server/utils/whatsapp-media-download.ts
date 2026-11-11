@@ -16,7 +16,9 @@ export async function createWhatsAppMediaDownload(auth: McpAuth, jid: string, me
   }
   const sql = await appDb()
   const [token] = await sql<{ token_hash: string }[]>`
-    SELECT token_hash FROM app.mcp_tokens WHERE id = ${auth.tokenId} AND revoked = false
+    SELECT token_hash FROM app.mcp_tokens
+    WHERE id = ${auth.tokenId} AND token_hash = ${auth.credentialHash}
+      AND revoked = false AND (expires_at IS NULL OR expires_at > now())
   `
   if (!token) throw createError({ statusCode: 401, message: 'The connector token is no longer active.' })
   const expiresAt = Date.now() + MEDIA_DOWNLOAD_TTL_MS

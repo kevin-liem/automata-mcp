@@ -4,6 +4,10 @@ export default defineEventHandler(async (event) => {
   setHeader(event, 'Cache-Control', 'no-store')
   setHeader(event, 'X-Content-Type-Options', 'nosniff')
   setHeader(event, 'Referrer-Policy', 'no-referrer')
+  if (event.method !== 'GET' && event.method !== 'HEAD') {
+    setHeader(event, 'Allow', 'GET, HEAD')
+    throw createError({ statusCode: 405, message: 'Media download links support GET and HEAD only.' })
+  }
   const access = await resolveMediaDownloadAuth(getRouterParam(event, 'grant') ?? '')
   if (!access) throw createError({ statusCode: 404, message: 'This media link is invalid or expired. Retrieve the attachment again to get a new link.' })
   const { auth, grant } = access
