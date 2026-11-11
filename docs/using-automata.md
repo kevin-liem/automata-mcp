@@ -78,7 +78,7 @@ comes back.
 | `list-chats` | WhatsApp | read | Conversations in scope, most recently active first, with the `jid` other tools take; says `hasMore` when it returned one page of several. No read/unread status — WhatsApp's read state isn't available to it |
 | `read-messages` | WhatsApp | read | One chat, newest first, 1–200 per page (default 50), optional `since` / `until`; reports `hasMore`, `nextPage`, `covered` and `totalMatching` |
 | `search-messages` | WhatsApp | read | Messages containing every word of `query`, across chats in scope or one `jid`; optional date range and `fromMe`; up to 100 matches (default 20) |
-| `get-whatsapp-media` | WhatsApp | read | Retrieve an image, video, audio recording, document or sticker by chat `jid` and `messageId`, up to 10 MiB |
+| `get-whatsapp-media` | WhatsApp | read | Retrieve an image, video, audio recording, document or sticker by chat `jid` and exact `messageId`, up to 10 MiB; `delivery` selects native media, an embedded file, or paged base64 text for clients that omit audio |
 | `send-text-message` | WhatsApp | **write** | Send text to a number in international format; a refusal (e.g. a number not on WhatsApp) comes back with WhatsApp's reason |
 | `get-telegram-status` | Telegram | read | Whether the account is linked and online, who it is signed in as, and how far sync has got |
 | `list-telegram-chats` | Telegram | read | Synced chats in scope — private, groups, supergroups, channels — most recently active first, with the `chatId` other tools take; 1–200 per page (default 100) |

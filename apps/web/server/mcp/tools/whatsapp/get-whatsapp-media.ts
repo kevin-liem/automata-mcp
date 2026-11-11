@@ -1,9 +1,12 @@
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 
 const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'ptvMessage', 'documentMessage', 'stickerMessage'] as const
 const INLINE_IMAGE = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024
 const MAX_RESPONSE_BYTES = 4 * Math.ceil(MAX_MEDIA_BYTES / 3) + 64 * 1024
+const DEFAULT_CHUNK_BYTES = 12 * 1024
+const MAX_CHUNK_BYTES = 48 * 1024
 
 const mediaResponse = z.object({
   base64: z.string().min(1),
@@ -17,10 +20,14 @@ export default defineKindTool({
   title: 'Get WhatsApp media',
   description:
     'Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. '
-    + 'Pass the chat `jid` and the message `id` as `messageId` from read-messages or search-messages. '
+    + 'Copy the chat `jid` and exact message `id` as `messageId` from read-messages or search-messages; do not infer an ID from a timestamp. '
     + 'Images and audio are returned as MCP media when supported by their format, '
     + 'and other formats are returned as embedded files with their original bytes and MIME type. '
     + 'Files over 10 MiB are refused. '
+    + 'If the client omits audio or cannot receive media blocks, use `delivery: "base64"`: '
+    + 'it returns the actual file bytes as a bounded base64 chunk in JSON text, with metadata and a SHA-256 checksum. '
+    + 'Repeat with `nextOffset` until `hasMore` is false, decode each chunk separately, then concatenate the decoded bytes to save the file. '
+    + '`delivery: "file"` returns an embedded file instead of native image/audio. Downloading audio does not transcribe it. '
     + 'Older attachments may have expired from WhatsApp.',
   annotations: {
     readOnlyHint: true,
@@ -30,22 +37,31 @@ export default defineKindTool({
   },
   inputSchema: {
     jid: z.string().min(1).max(256).describe('The full chat JID, exactly as returned by read-messages or search-messages'),
-    messageId: z.string().min(1).max(256).describe('The media message ID from read-messages or search-messages'),
+    messageId: z.string().min(1).max(256).describe('Copy the exact id from the desired media entry in read-messages or search-messages'),
+    delivery: z.enum(['native', 'file', 'base64']).default('native').describe('native: MCP image/audio or embedded file; file: always an embedded file; base64: JSON text chunks for clients that omit media blocks'),
+    offset: z.number().int().min(0).max(MAX_MEDIA_BYTES).default(0).describe('For base64 delivery only: decoded byte offset, starting at 0; use nextOffset to continue'),
+    limit: z.number().int().min(1).max(MAX_CHUNK_BYTES).default(DEFAULT_CHUNK_BYTES).describe('For base64 delivery only: maximum decoded bytes in this chunk, default 12 KiB and maximum 48 KiB'),
   },
-  handler: async ({ jid, messageId }) => {
+  handler: async ({ jid, messageId, delivery = 'native', offset = 0, limit = DEFAULT_CHUNK_BYTES }) => {
     const { instance, scope } = useMcpAuth()
     assertChatAllowed(scope, jid)
+    if (delivery !== 'base64' && (offset !== 0 || limit !== DEFAULT_CHUNK_BYTES)) {
+      throw createError({ statusCode: 400, message: 'offset and limit apply only to delivery: "base64".' })
+    }
     const { jids } = expandChat(scope, await lidLinks(instance), jid)
     const { records: [record] } = await listMessagesPage(instance, { jids, messageId, limit: 1, page: 1 })
     if (!record?.key) {
-      throw createError({ statusCode: 404, message: 'No stored message has this id in the requested chat.' })
+      throw createError({ statusCode: 404, message: 'No stored message has this id in the requested chat. Copy the exact id from read-messages or search-messages.' })
     }
 
-    const { payload } = classifyContent(record.message, record.messageType ?? undefined)
+    const { payload, type: messageType } = classifyContent(record.message, record.messageType ?? undefined)
     const type = MEDIA_TYPES.find(type => payload?.[type])
     const media = type && payload?.[type]
-    if (!type || !media || typeof media !== 'object' || media.viewOnce === true) {
-      throw createError({ statusCode: 422, message: 'This message does not have a downloadable image, video, audio recording, document or sticker.' })
+    if (!type || !media || typeof media !== 'object') {
+      throw createError({ statusCode: 422, message: `The requested message is ${messageType || record.messageType || 'a non-media message'}, not downloadable media. Copy the exact id of the desired media entry from read-messages or search-messages; [voice message] is an audio placeholder, not a transcript.` })
+    }
+    if (media.viewOnce === true) {
+      throw createError({ statusCode: 422, message: 'This is view-once media, which this connector does not download.' })
     }
     if (fileLength(media.fileLength) > MAX_MEDIA_BYTES) throw mediaTooLarge()
 
@@ -68,9 +84,28 @@ export default defineKindTool({
     const reportedType = file.mimetype || (typeof media.mimetype === 'string' ? media.mimetype : '')
     const mimeType = reportedType.split(';', 1)[0]?.trim().toLowerCase() || 'application/octet-stream'
     const filename = file.fileName || (typeof media.fileName === 'string' && media.fileName) || messageId
-    const attachment = INLINE_IMAGE.has(mimeType)
+    const meta = { jid, messageId, filename, mimeType, size: data.length, delivery, sha256: createHash('sha256').update(data).digest('hex') }
+
+    // Some ChatGPT clients replace native audio with an "audio content omitted"
+    // placeholder. Text delivery must work without any multimodal content block.
+    if (delivery === 'base64') {
+      if (offset >= data.length) {
+        throw createError({ statusCode: 416, message: 'The byte offset is outside this file. Start at 0 or use the previous response\'s nextOffset.' })
+      }
+      const chunk = data.subarray(offset, offset + limit)
+      const nextOffset = offset + chunk.length
+      const hasMore = nextOffset < data.length
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ...meta, encoding: 'base64', offset, byteLength: chunk.length, hasMore,
+          ...(hasMore && { nextOffset }), data: chunk.toString('base64'),
+        }) }],
+      }
+    }
+
+    const attachment = delivery === 'native' && INLINE_IMAGE.has(mimeType)
       ? { type: 'image' as const, data: file.base64, mimeType }
-      : mimeType.startsWith('audio/')
+      : delivery === 'native' && mimeType.startsWith('audio/')
         ? { type: 'audio' as const, data: file.base64, mimeType }
         : {
             type: 'resource' as const,
@@ -83,7 +118,12 @@ export default defineKindTool({
 
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ jid, messageId, filename, mimeType, size: data.length }) },
+        { type: 'text' as const, text: JSON.stringify({
+          ...meta,
+          ...(mimeType.startsWith('audio/') && {
+            note: 'The audio file was downloaded; no transcript is included. If your client omits the audio/file block, call this tool with delivery: "base64" and offset: 0, then page with nextOffset until hasMore is false. Decode each chunk separately and concatenate the decoded bytes to save the file.',
+          }),
+        }) },
         attachment,
       ],
     }

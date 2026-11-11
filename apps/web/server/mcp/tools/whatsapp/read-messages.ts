@@ -68,7 +68,10 @@ export default defineKindTool({
     + '\'encrypted-edit\'`: the current wording of that message is unknown '
     + 'here, so report it as unknown rather than treating the earlier version '
     + 'as final. To find a message by what it says, prefer search-messages when '
-    + 'this connector offers it.',
+    + 'this connector offers it. '
+    + '`[voice message]` is an audio placeholder, not a transcript. To download it, copy that exact entry\'s `id` '
+    + 'to get-whatsapp-media as `messageId`; do not infer it from another entry or timestamp. '
+    + 'Use `delivery: "base64"` on get-whatsapp-media when the client omits native audio.',
   annotations: {
     readOnlyHint: true,
     destructiveHint: false,

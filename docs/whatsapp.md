@@ -183,14 +183,20 @@ Call `get-whatsapp-media` with the chat's `jid` and pass the message's `id` as
 with an explicit tool allowlist must include `get-whatsapp-media`, and the chat
 must be within the token's scope.
 
+Copy the **exact ID of the audio entry**, not another message's ID or an ID
+inferred from a timestamp. `[voice message]` is a placeholder, not a transcript.
+A 422 for a non-media message identifies its stored type and directs the caller
+back to the listing; it does not mean a different recording has expired.
+
 The tool fetches one image, video, audio recording, document or sticker on
 demand, up to **10 MiB (10,485,760 decoded bytes)**. It preserves the downloaded
 bytes; it does not convert file formats. Older attachments can expire even when
 the message still appears in history. View-once media is refused.
 
-Every successful MCP tool result has a `content` array. The first block is
+With the default `delivery: "native"`, the MCP tool result has a `content` array. The first block is
 `{ "type": "text", "text": "<JSON metadata>" }`, where the metadata contains
-`jid`, `messageId`, `filename`, `mimeType` and decoded byte `size`. The second
+`jid`, `messageId`, `filename`, `mimeType`, decoded byte `size`, `delivery` and
+the complete file's `sha256`. The second
 block contains the file:
 
 | File format | MIME type | MCP content block |
@@ -214,6 +220,51 @@ An MCP bridge must forward the complete JSON-RPC response, including all
 13.33 MiB in base64 before the JSON metadata. Agents can decode `data` or `blob`
 to recover the original file. Preview, playback and model understanding depend
 on the MCP client's support for that MIME type.
+
+### Clients that omit audio
+
+Some ChatGPT clients replace an MCP audio block with
+`<audio content omitted because you do not support audio input>`. This means
+the server downloaded the audio, but the client did not expose those bytes to
+the model. Native audio metadata now explains how to recover the file.
+
+Use `delivery: "file"` to receive an embedded `resource` for any MIME type,
+including audio. For clients that also omit embedded files, use
+`delivery: "base64"`. This mode returns **one text block only**, containing
+JSON with the metadata above plus:
+
+| Field | Meaning |
+| --- | --- |
+| `encoding` | `base64` (standard padded base64, no data-URL prefix) |
+| `data` | Base64 for this chunk of the original file |
+| `offset` | Starting offset in **decoded bytes**, initially 0 |
+| `byteLength` | Number of decoded bytes in this chunk |
+| `hasMore` | Whether more bytes remain |
+| `nextOffset` | Offset to use for the next call; present only when `hasMore` is true |
+
+Example arguments:
+
+```json
+{"jid":"<jid from read-messages>","messageId":"<exact audio entry id>","delivery":"base64","offset":0}
+```
+
+Decode each chunk **separately**, concatenate the decoded bytes in offset order,
+and save them using `filename`. Do not concatenate the base64 strings: a chunk
+may have its own padding. Keep the same `jid`, `messageId`, `size` and `sha256`
+across calls, continue with `nextOffset` until `hasMore` is false, then verify
+the assembled file's size and SHA-256. An offset at or beyond the end is refused
+with 416. The optional `limit` is a decoded-byte count: 12 KiB by default,
+48 KiB maximum. `offset` and `limit` apply only to base64 delivery.
+
+Each call fetches the attachment on demand; no media cache or download endpoint
+is created. Native or embedded delivery is preferable when the client supports
+it. Base64 delivery retains the same chat/tool scope, view-once refusal and
+10 MiB whole-file limit. It provides the actual recording, not a transcript.
+An agent still needs a file/code tool to save bytes and an audio-capable tool
+to listen or transcribe. Metadata alone does not reveal the recording's words.
+
+After deploying a change to these tool arguments, refresh the connector's tool
+definitions in the client before using `delivery`, `offset` or `limit`.
 
 ## Chats addressed by LID (`…@lid`)
 

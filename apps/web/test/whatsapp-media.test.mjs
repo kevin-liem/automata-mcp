@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 
 // Nuxt supplies these auto-imports in production. Keep the tool itself intact
 // and replace only its authenticated database and Evolution boundaries here.
@@ -70,9 +71,12 @@ for (const [type, reportedType, contentType] of formats) {
     const { media, data } = prepare(type, reportedType)
     const result = await tool.handler({ jid, messageId })
     const mimeType = reportedType.split(';')[0]
-    assert.deepEqual(JSON.parse(result.content[0].text), {
-      jid, messageId, filename: 'sample.bin', mimeType, size: data.length,
+    const { note, ...metadata } = JSON.parse(result.content[0].text)
+    assert.deepEqual(metadata, {
+      jid, messageId, filename: 'sample.bin', mimeType, size: data.length, delivery: 'native',
+      sha256: createHash('sha256').update(data).digest('hex'),
     })
+    if (contentType === 'audio') assert.match(note, /delivery: "base64"/)
     const attachment = result.content[1]
     assert.equal(attachment.type, contentType)
     const file = contentType === 'resource' ? attachment.resource : attachment
@@ -93,6 +97,99 @@ test('uses the stored document filename and MIME type when Evolution omits them'
   assert.equal(JSON.parse(result.content[0].text).filename, media.fileName)
   assert.equal(result.content[1].resource.mimeType, 'application/pdf')
   assert.ok(result.content[1].resource.uri.endsWith(`/${encodeURIComponent(media.fileName)}`))
+})
+
+test('file delivery returns audio as an embedded file with its original bytes', async () => {
+  const { data } = prepare('audioMessage', 'audio/ogg; codecs=opus')
+  const result = await tool.handler({ jid, messageId, delivery: 'file' })
+  assert.equal(result.content[1].type, 'resource')
+  assert.equal(result.content[1].resource.mimeType, 'audio/ogg')
+  assert.deepEqual(Buffer.from(result.content[1].resource.blob, 'base64'), data)
+  assert.equal(JSON.parse(result.content[0].text).delivery, 'file')
+})
+
+test('a client that discards native audio can reconstruct the voice file using text-only chunks', async () => {
+  const data = Buffer.alloc(178_011)
+  for (let i = 0; i < data.length; i++) data[i] = i % 251
+  prepare('audioMessage', 'audio/ogg; codecs=opus', data)
+  // Reproduce the host behavior: only text survives a native audio response.
+  const native = await tool.handler({ jid, messageId })
+  const visible = native.content.filter(block => block.type === 'text')
+  assert.equal(visible.length, 1)
+  assert.match(JSON.parse(visible[0].text).note, /no transcript/)
+
+  const chunks = []
+  let offset = 0
+  let expectedHash
+  for (;;) {
+    const result = await tool.handler({ jid, messageId, delivery: 'base64', offset })
+    assert.equal(result.content.length, 1)
+    assert.equal(result.content[0].type, 'text')
+    const part = JSON.parse(result.content[0].text)
+    assert.equal(part.offset, offset)
+    assert.equal(part.encoding, 'base64')
+    assert.equal(part.delivery, 'base64')
+    assert.equal(part.size, data.length)
+    assert.equal(part.mimeType, 'audio/ogg')
+    assert.ok(part.byteLength <= 12 * 1024)
+    const bytes = Buffer.from(part.data, 'base64')
+    assert.equal(bytes.length, part.byteLength)
+    chunks.push(bytes)
+    expectedHash ??= part.sha256
+    assert.equal(part.sha256, expectedHash)
+    if (!part.hasMore) {
+      assert.equal(part.nextOffset, undefined)
+      break
+    }
+    assert.equal(part.nextOffset, offset + bytes.length)
+    offset = part.nextOffset
+  }
+  const received = Buffer.concat(chunks)
+  assert.deepEqual(received, data)
+  assert.equal(createHash('sha256').update(received).digest('hex'), expectedHash)
+})
+
+test('chunk offsets refer to decoded bytes, including padded base64 chunks', async () => {
+  const { data } = prepare('documentMessage', 'application/octet-stream', Buffer.from([0, 255, 1, 128, 2]))
+  const parts = []
+  for (let offset = 0; offset < data.length; offset += 2) {
+    const result = await tool.handler({ jid, messageId, delivery: 'base64', offset, limit: 2 })
+    const part = JSON.parse(result.content[0].text)
+    assert.equal(part.offset, offset)
+    parts.push(Buffer.from(part.data, 'base64'))
+  }
+  assert.deepEqual(Buffer.concat(parts), data)
+  await assert.rejects(tool.handler({ jid, messageId, delivery: 'base64', offset: data.length }), { statusCode: 416 })
+})
+
+test('a wrong non-media message id gives recovery instructions instead of suggesting an expired recording', async () => {
+  prepare()
+  record = { key, messageType: 'conversation', message: { conversation: 'plain text' } }
+  await assert.rejects(tool.handler({ jid, messageId }), error => {
+    assert.equal(error.statusCode, 422)
+    assert.match(error.message, /conversation, not downloadable media/)
+    assert.match(error.message, /Copy the exact id/)
+    assert.doesNotMatch(error.message, /expired/)
+    return true
+  })
+  assert.equal(downloads.length, 0)
+})
+
+test('base64 fallback keeps chat scope, view-once restrictions and the original file-size limit', async () => {
+  const { media } = prepare('audioMessage', 'audio/ogg')
+  await assert.rejects(tool.handler({ jid: 'other@lid', messageId, delivery: 'base64' }), { statusCode: 403 })
+  media.viewOnce = true
+  await assert.rejects(tool.handler({ jid, messageId, delivery: 'base64' }), /view-once media/)
+  delete media.viewOnce
+  media.fileLength = maxBytes + 1
+  await assert.rejects(tool.handler({ jid, messageId, delivery: 'base64' }), { statusCode: 413 })
+  assert.equal(downloads.length, 0)
+})
+
+test('chunk controls are refused for native delivery before a download', async () => {
+  prepare()
+  await assert.rejects(tool.handler({ jid, messageId, offset: 1 }), { statusCode: 400 })
+  assert.equal(downloads.length, 0)
 })
 
 test('refuses an out-of-scope chat before querying or downloading', async () => {
