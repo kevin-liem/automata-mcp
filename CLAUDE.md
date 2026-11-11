@@ -272,6 +272,18 @@ Deliberate non-goals, not oversights: deletion dropped like any control record, 
 
 ## Credential rules that are easy to break later
 
+**WhatsApp media downloads:** `get-whatsapp-media` defaults to `delivery: auto`:
+five-minute file-only HTTPS links plus metadata; image previews stay inline.
+`whatsapp-media.ts` is the shared scoped/size-capped downloader for the tool and
+`api/media/whatsapp/[grant].get.ts`. Grants are signed with a domain-separated
+HMAC over the token ID, chat, message, checksum and expiry, keyed by the stored
+token hash. `resolveMediaDownloadAuth` verifies the grant before using the same
+live authorization path as MCP; tool/chat scope and plan limits are checked on
+GET too. Never put the raw MCP token in a file link, skip current authorization,
+or log the grant path. Rotation changes the signing key. No media is persisted.
+Native, embedded-file and bounded base64 modes remain explicit compatibility
+options; ordinary users must not need format/offset prompts.
+
 **No global-key fallback in per-instance credentials.** `credentialsForInstance()` returns `undefined` when instance has no `api_key`; callers must fail. Global-key fallback hands any MCP token holder *every* account on that Evolution server. Global keys have exactly two callers, both in `server/utils/instances.ts`: create and delete.
 
 Sharper edge now: global key can sit **on instance row itself** — `instances.admin_key` holds key for bring-your-own Evolution server. `credentialsForInstance()` must never read it; why param typed `Pick<AppInstance, 'base_url' | 'api_key'>` — field not even in scope.

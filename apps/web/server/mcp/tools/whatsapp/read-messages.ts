@@ -71,7 +71,8 @@ export default defineKindTool({
     + 'this connector offers it. '
     + '`[voice message]` is an audio placeholder, not a transcript. To download it, copy that exact entry\'s `id` '
     + 'to get-whatsapp-media as `messageId`; do not infer it from another entry or timestamp. '
-    + 'Use `delivery: "base64"` on get-whatsapp-media when the client omits native audio.',
+    + 'For a download request, call get-whatsapp-media with only jid and messageId and show its downloadUrl as a clickable link. '
+    + 'Do not ask the user to choose delivery modes or provide technical prompts.',
   annotations: {
     readOnlyHint: true,
     destructiveHint: false,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
+import { fetchWhatsAppMedia, WHATSAPP_MEDIA_MAX_BYTES } from '../server/utils/whatsapp-media.ts'
 
 // Nuxt supplies these auto-imports in production. Keep the tool itself intact
 // and replace only its authenticated database and Evolution boundaries here.
@@ -14,10 +15,17 @@ let record
 let response
 let downloads
 let lookup
+let links
 
 Object.assign(globalThis, {
   defineKindTool: definition => definition,
-  useMcpAuth: () => ({ instance, scope }),
+  useMcpAuth: () => ({ instance, scope, tokenId: 'media-token', kind: 'whatsapp' }),
+  fetchWhatsAppMedia,
+  WHATSAPP_MEDIA_MAX_BYTES,
+  createWhatsAppMediaDownload: async (auth, requestedJid, requestedId, sha256) => {
+    links.push({ tokenId: auth.tokenId, jid: requestedJid, messageId: requestedId, sha256 })
+    return { downloadUrl: 'https://automata.example/api/media/whatsapp/file-only-grant', downloadExpiresAt: '2030-01-01T00:05:00.000Z' }
+  },
   assertChatAllowed: (_scope, requested) => {
     if (requested !== jid) throw Object.assign(new Error('Chat outside scope'), { statusCode: 403 })
   },
@@ -44,6 +52,7 @@ function prepare(type = 'imageMessage', mimeType = 'image/png', data = Buffer.fr
   response = () => Response.json({ base64: data.toString('base64'), mimetype: mimeType, fileName: 'sample.bin' })
   downloads = []
   lookup = undefined
+  links = []
   return { media, data }
 }
 
@@ -69,7 +78,7 @@ const formats = [
 for (const [type, reportedType, contentType] of formats) {
   test(`${type} (${reportedType}) preserves bytes as MCP ${contentType}`, async () => {
     const { media, data } = prepare(type, reportedType)
-    const result = await tool.handler({ jid, messageId })
+    const result = await tool.handler({ jid, messageId, delivery: 'native' })
     const mimeType = reportedType.split(';')[0]
     const { note, ...metadata } = JSON.parse(result.content[0].text)
     assert.deepEqual(metadata, {
@@ -93,7 +102,7 @@ test('uses the stored document filename and MIME type when Evolution omits them'
   const { media, data } = prepare('documentMessage', 'application/pdf')
   media.fileName = 'invoice #1 日本語.pdf'
   response = () => Response.json({ base64: data.toString('base64') })
-  const result = await tool.handler({ jid, messageId })
+  const result = await tool.handler({ jid, messageId, delivery: 'native' })
   assert.equal(JSON.parse(result.content[0].text).filename, media.fileName)
   assert.equal(result.content[1].resource.mimeType, 'application/pdf')
   assert.ok(result.content[1].resource.uri.endsWith(`/${encodeURIComponent(media.fileName)}`))
@@ -108,12 +117,38 @@ test('file delivery returns audio as an embedded file with its original bytes', 
   assert.equal(JSON.parse(result.content[0].text).delivery, 'file')
 })
 
+test('ordinary voice-note retrieval needs only jid and messageId and returns a download link', async () => {
+  const { data } = prepare('audioMessage', 'audio/ogg; codecs=opus', Buffer.alloc(178_011, 0xa5))
+  const result = await tool.handler({ jid, messageId })
+  const meta = JSON.parse(result.content[0].text)
+  assert.equal(meta.delivery, 'auto')
+  assert.equal(meta.size, data.length)
+  assert.equal(meta.mimeType, 'audio/ogg')
+  assert.equal(meta.downloadUrl, 'https://automata.example/api/media/whatsapp/file-only-grant')
+  assert.ok(meta.downloadExpiresAt)
+  assert.match(meta.note, /clickable download link/)
+  assert.equal(result.content[1].type, 'resource_link')
+  assert.equal(result.content[1].uri, meta.downloadUrl)
+  assert.equal(result.content[1].name, meta.filename)
+  assert.equal(downloads.length, 1)
+  assert.deepEqual(links, [{ tokenId: 'media-token', jid, messageId, sha256: meta.sha256 }])
+  assert.ok(result.content.every(block => !('data' in block)))
+})
+
+test('ordinary image requests retain their inline preview and include a download link', async () => {
+  const { data } = prepare()
+  const result = await tool.handler({ jid, messageId })
+  assert.equal(result.content[1].type, 'image')
+  assert.deepEqual(Buffer.from(result.content[1].data, 'base64'), data)
+  assert.match(JSON.parse(result.content[0].text).downloadUrl, /^https:/)
+})
+
 test('a client that discards native audio can reconstruct the voice file using text-only chunks', async () => {
   const data = Buffer.alloc(178_011)
   for (let i = 0; i < data.length; i++) data[i] = i % 251
   prepare('audioMessage', 'audio/ogg; codecs=opus', data)
   // Reproduce the host behavior: only text survives a native audio response.
-  const native = await tool.handler({ jid, messageId })
+  const native = await tool.handler({ jid, messageId, delivery: 'native' })
   const visible = native.content.filter(block => block.type === 'text')
   assert.equal(visible.length, 1)
   assert.match(JSON.parse(visible[0].text).note, /no transcript/)
@@ -222,7 +257,7 @@ test('refuses all supported representations of an oversized stored length before
 test('accepts exactly 10 MiB and refuses oversized decoded bytes even without a stored size', async () => {
   const data = Buffer.alloc(maxBytes, 0xa5)
   prepare('documentMessage', 'application/octet-stream', data)
-  const result = await tool.handler({ jid, messageId })
+  const result = await tool.handler({ jid, messageId, delivery: 'native' })
   assert.equal(JSON.parse(result.content[0].text).size, maxBytes)
   assert.deepEqual(Buffer.from(result.content[1].resource.blob, 'base64'), data)
   const { media } = prepare('documentMessage', 'application/octet-stream', Buffer.alloc(maxBytes + 1))

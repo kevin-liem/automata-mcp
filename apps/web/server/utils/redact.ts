@@ -24,6 +24,8 @@ export function redactPath(path: string | undefined): string {
   if (!path) return ''
   const [pathname] = path.split('?')
 
+  if (isMediaDownloadPath(pathname)) return `/api/media/whatsapp/${REDACTED}`
+
   if (pathname === '/mcp' || !pathname!.startsWith('/mcp')) {
     return pathname!
   }
@@ -45,4 +47,8 @@ export function isMcpPath(path: string | undefined): boolean {
   if (!path) return false
   const [pathname] = path.split('?')
   return pathname === '/mcp' || pathname!.startsWith('/mcp/')
+}
+
+export function isMediaDownloadPath(path: string | undefined): boolean {
+  return Boolean(path?.split('?')[0]?.startsWith('/api/media/whatsapp/'))
 }

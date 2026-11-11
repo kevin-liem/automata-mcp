@@ -193,7 +193,37 @@ demand, up to **10 MiB (10,485,760 decoded bytes)**. It preserves the downloaded
 bytes; it does not convert file formats. Older attachments can expire even when
 the message still appears in history. View-once media is refused.
 
-With the default `delivery: "native"`, the MCP tool result has a `content` array. The first block is
+### Ordinary downloads
+
+Users can ask naturally, for example **“Unduh voice note terakhir dari Donny.”**
+The agent reads the chat and calls `get-whatsapp-media` with only `jid` and
+`messageId`. No delivery setting, chunk prompt or manual decoding is required.
+
+The default `delivery: "auto"` returns JSON text metadata containing `jid`,
+`messageId`, `filename`, `mimeType`, decoded byte `size`, whole-file `sha256`,
+`downloadUrl` and `downloadExpiresAt`. The agent presents `downloadUrl` as a
+clickable link. A supported image also has an inline preview; other files have
+an MCP `resource_link` with the same HTTPS URL, filename, MIME type and size.
+The full file downloads through HTTP with its filename and MIME headers,
+without sending base64 through the model's context.
+
+Links last at most five minutes and grant access to **one exact attachment**.
+The original MCP bearer token is never put in the URL. Every download verifies
+the signature and rechecks the token, membership, connection, chat/tool scope
+and plan limits. Revocation, rotation or loss of access invalidates the link.
+The file's checksum must still match. Links carry file-only access while valid,
+so they should only be shared with the intended recipient.
+
+`NUXT_PUBLIC_APP_URL` must point to this app's public HTTPS origin (HTTP loopback
+is allowed for development). The endpoint is stateless across replicas and
+re-fetches the attachment on download; no media cache, new database table,
+storage service or new signing-secret setting is needed. Capability URLs are
+redacted from application error paths and responses use `Cache-Control: no-store`.
+For an expired link, the agent retrieves the attachment again for a fresh one.
+
+### Explicit native delivery
+
+Advanced clients may request `delivery: "native"`. The first content block is
 `{ "type": "text", "text": "<JSON metadata>" }`, where the metadata contains
 `jid`, `messageId`, `filename`, `mimeType`, decoded byte `size`, `delivery` and
 the complete file's `sha256`. The second
@@ -221,12 +251,12 @@ An MCP bridge must forward the complete JSON-RPC response, including all
 to recover the original file. Preview, playback and model understanding depend
 on the MCP client's support for that MIME type.
 
-### Clients that omit audio
+### Advanced compatibility modes
 
 Some ChatGPT clients replace an MCP audio block with
 `<audio content omitted because you do not support audio input>`. This means
 the server downloaded the audio, but the client did not expose those bytes to
-the model. Native audio metadata now explains how to recover the file.
+the model. The default download link works independently of native audio support.
 
 Use `delivery: "file"` to receive an embedded `resource` for any MIME type,
 including audio. For clients that also omit embedded files, use
@@ -256,15 +286,14 @@ the assembled file's size and SHA-256. An offset at or beyond the end is refused
 with 416. The optional `limit` is a decoded-byte count: 12 KiB by default,
 48 KiB maximum. `offset` and `limit` apply only to base64 delivery.
 
-Each call fetches the attachment on demand; no media cache or download endpoint
-is created. Native or embedded delivery is preferable when the client supports
-it. Base64 delivery retains the same chat/tool scope, view-once refusal and
+Each base64 call fetches the attachment on demand. Default download links avoid
+these repeated chunk calls for ordinary users. Base64 delivery retains the same chat/tool scope, view-once refusal and
 10 MiB whole-file limit. It provides the actual recording, not a transcript.
 An agent still needs a file/code tool to save bytes and an audio-capable tool
 to listen or transcribe. Metadata alone does not reveal the recording's words.
 
-After deploying a change to these tool arguments, refresh the connector's tool
-definitions in the client before using `delivery`, `offset` or `limit`.
+After deploying changed tool definitions, refresh the connector once. Users
+can then keep asking naturally without specifying `delivery`, `offset` or `limit`.
 
 ## Chats addressed by LID (`…@lid`)
 

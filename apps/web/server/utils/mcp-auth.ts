@@ -5,9 +5,10 @@ import type { AppInstance, AppMcpToken, AppUser, OrgLimits, OrgRole } from './ap
 import type { McpScope } from './mcp-scope'
 import type { EvolutionCredentials } from './evolution'
 import type { TelegramCredentials } from './telegram'
+import { parseMediaDownloadGrant, verifyMediaDownloadGrant } from './media-download-grant'
 
 /**
- * Auth for the MCP surface — and ONLY the MCP surface.
+ * Auth for MCP tools and the file-only download grants issued by those tools.
  *
  * This module has no access to, and no fallback to, the browser session. A
  * request that fails token auth here fails outright; it never degrades into
@@ -129,6 +130,30 @@ function extractToken(event: H3Event): string | undefined {
 export async function resolveMcpAuth(event: H3Event): Promise<McpAuth | undefined> {
   const token = extractToken(event)
   if (!token || !token.startsWith(TOKEN_PREFIX)) return undefined
+  return await resolveMcpAuthHash(hashMcpToken(token))
+}
+
+/** Validate a file-only grant, then apply the same live authorization as MCP. */
+export async function resolveMediaDownloadAuth(value: string) {
+  const claimed = parseMediaDownloadGrant(value)
+  if (!claimed) return undefined
+  let tokenHash: string | undefined
+  try {
+    const sql = await appDb()
+    const [row] = await sql<{ token_hash: string }[]>`
+      SELECT token_hash FROM app.mcp_tokens WHERE id = ${claimed.tokenId}
+    `
+    tokenHash = row?.token_hash
+  }
+  catch (error) { throw appDbUnavailable(error) }
+  if (!tokenHash) return undefined
+  const grant = verifyMediaDownloadGrant(value, tokenHash)
+  if (!grant) return undefined
+  const auth = await resolveMcpAuthHash(tokenHash)
+  return auth?.tokenId === grant.tokenId ? { auth, grant } : undefined
+}
+
+async function resolveMcpAuthHash(hash: string): Promise<McpAuth | undefined> {
 
   // ── who this token still reaches ─────────────────────────────────────────
   //
@@ -151,7 +176,6 @@ export async function resolveMcpAuth(event: H3Event): Promise<McpAuth | undefine
   //   membership.org !== instance.org  → 401, logged   they left the org
   //   no assignment, role member       → 401, logged   assignment revoked
   //   role admin                       → authorized, assignments not consulted
-  const hash = hashMcpToken(token)
   let record: McpTokenFacts | undefined
   let instance: AppInstance | undefined
   try {
