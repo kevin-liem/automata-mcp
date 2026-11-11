@@ -8,6 +8,7 @@ import type { LidLinks } from './whatsapp-identity'
 import { canonicalJid, lidLinks, linkedJidOf, phoneNumberBehind, phoneNumberOf } from './whatsapp-identity'
 import type { GroupInfo } from './whatsapp-groups'
 import { groupNamesFor } from './whatsapp-groups'
+import { sharedCache } from './shared-cache'
 
 /**
  * Reading conversations out of Evolution.
@@ -112,7 +113,7 @@ export type UnreadableReason = 'encrypted-edit' | 'encrypted-content'
 export interface ChatQuery {
   /** Page size. */
   take?: number
-  /** Rows to skip. Evolution maps this straight to SQL `OFFSET`. */
+  /** Rows to skip in the cached listing. */
   skip?: number
 }
 
@@ -121,20 +122,21 @@ export interface ChatQuery {
  *
  * The envelope is here because the obvious completeness signal is a trap. The
  * dashboard's chat count is `_count.Chat` — rows in Evolution's `Chat` table —
- * while this listing is `DISTINCT ON (remoteJid)` over `"Message"`. History sync
- * writes a `Chat` row for every conversation the phone lists but persists only
- * the messages it actually delivered, so the listing is legitimately shorter and
- * no amount of paging closes the gap. Comparing the two announces a truncation
- * that is not there and offers a next page that comes back empty.
+ * while this listing is built from `"Message"`, one row per conversation with
+ * messages. History sync writes a `Chat` row for every conversation the phone
+ * lists but persists only the messages it actually delivered, so the listing is
+ * legitimately shorter and no amount of paging closes the gap. Comparing the two
+ * announces a truncation that is not there and offers a next page that comes
+ * back empty.
  */
 export interface ChatPage {
   chats: ChatSummary[]
   /**
-   * There may be another page behind this one.
+   * There is another page behind this one.
    *
-   * Derived from "the page came back full", never from a count — the same rule
-   * `MessagePage.hasMore` follows, and here the only count within reach counts a
-   * different population entirely.
+   * From the length of the whole cached listing this page was sliced from,
+   * which is exact — never from `_count.Chat`, which counts a different
+   * population entirely.
    */
   hasMore: boolean
 }
@@ -174,32 +176,40 @@ interface ChatListing {
 /**
  * One window of the account's conversations, most recent activity first.
  *
- * **Read live on every call — no listing cache.** It used to walk Evolution's
- * `findChats` into a 60-second memo, which is why a message already visible on
- * the dashboard could be missing from `list-chats` for up to a minute. Now it is
- * one aggregate over `"Message"` (`listChatActivity`), which is the same scan
- * `findChats` ran. Only *names* still come from caches — `contactDirectory()` and the group listing —
- * since a name changes on a human timescale and a message does not.
+ * **One read per account per minute, shared by every page and caller (#174).**
+ * `listChatActivity` answers with the whole listing — a loose index scan whose
+ * cost follows the number of chats — and `chatActivityCache` keeps that answer
+ * for `CHAT_ACTIVITY_TTL_MS`, in Redis when `NUXT_REDIS_URL` is set, else
+ * in-process (`shared-cache.ts`). Pages are sliced out of it here, so paging
+ * the dashboard dialog, the scope picker walking the list, and an agent calling
+ * `list-chats` in a loop all reuse one read. The cost: a message sent a moment
+ * ago can take up to that long to move its chat to the top. Before #174 this
+ * was read live, as one aggregate over every message of the account per page,
+ * and large accounts timed out.
+ *
+ * Only the window is named (`nameChats`): names come from their own caches —
+ * `contactDirectory()` and the group listing — and naming thousands of chats
+ * per page would be the cost this avoids.
  *
  * A connection with no message database (its own Evolution server, no
  * `evolution_db_url`) cannot run that query, so it keeps the old `findChats`
  * walk, uncached.
  *
- * A failure is reported, not thrown: an empty first page is already the honest
- * answer for a freshly paired account and must not break the scope picker. The
- * callers decide what a failed later page means.
+ * A failure is reported, not thrown, and never cached: an empty first page is
+ * already the honest answer for a freshly paired account and must not break
+ * the scope picker. The callers decide what a failed later page means.
  */
 async function chatListing(instance: AppInstance, window: { limit: number, offset: number }): Promise<ChatListing> {
   if (!canReadMessages(instance)) return walkFindChats(instance, window)
 
-  // Before the listing, so the fold happens in SQL and pages count people.
-  // Never throws: a failed read serves the last good links, or none.
-  const links = await lidLinks(instance)
-
   let rows: ChatActivityRow[]
-  let total: number
   try {
-    ({ rows, total } = await listChatActivity(instance, { ...window, links: links.lidOf }))
+    rows = await chatActivityCache.get(instance.id, async () => {
+      // Before the listing, so the fold happens in SQL and the listing counts
+      // people. Never throws: a failed read serves the last good links, or none.
+      const links = await lidLinks(instance)
+      return await listChatActivity(instance, links.lidOf)
+    })
   }
   catch (error) {
     // Also covers resolving the Evolution instance id, which can fail before
@@ -208,15 +218,28 @@ async function chatListing(instance: AppInstance, window: { limit: number, offse
     return { chats: [], total: 0, truncated: false, failed: true }
   }
 
-  const chats = await nameChats(instance, rows.map(row => ({
+  const chats = await nameChats(instance, rows.slice(window.offset, window.offset + window.limit).map(row => ({
     jid: row.jid,
     jids: row.jids,
     lastMessageAt: isoFromEpochSeconds(row.lastTimestamp),
     lastRowId: row.lastRowId ?? undefined,
   })))
 
-  return { chats, total, truncated: false, failed: false }
+  return { chats, total: rows.length, truncated: false, failed: false }
 }
+
+/**
+ * How long one account's chat listing is served before it is read again.
+ * Short, so "a new message moves its chat up" still holds within a minute.
+ */
+const CHAT_ACTIVITY_TTL_MS = 60_000
+
+/**
+ * The whole listing per connection id: JIDs, timestamps and row ids — never a
+ * name, a preview or message content. Unscoped, like the read it caches: chat
+ * scope is applied by the callers after slicing, as before.
+ */
+const chatActivityCache = sharedCache<ChatActivityRow[]>({ namespace: 'chat-activity', ttlMs: CHAT_ACTIVITY_TTL_MS })
 
 /**
  * The fallback for a connection whose messages this app cannot read: walk
@@ -421,11 +444,11 @@ async function withPreviews(instance: AppInstance, chats: ListedChat[]): Promise
  * Recent conversations, newest activity first.
  *
  * For the token scope picker and the `list-chats` tool, which page with
- * `take`/`skip` in activity order — pushed down to SQL as `LIMIT`/`OFFSET`.
+ * `take`/`skip` in activity order — sliced out of the cached listing.
  */
 export async function listChats(instance: AppInstance, query: ChatQuery = {}): Promise<ChatPage> {
   const { take = 200, skip = 0 } = query
-  const listing = await chatListing(instance, { limit: take, offset: skip })
+  const { page, listing } = await activityPage(instance, take, skip)
 
   // An empty first page is already the honest answer for a freshly paired
   // account, and must not break the picker or the MCP tool. A page past the
@@ -438,9 +461,15 @@ export async function listChats(instance: AppInstance, query: ChatQuery = {}): P
     })
   }
 
+  return page
+}
+
+/** One window of the listing in its own order, previewed. Shared by both listing entry points. */
+async function activityPage(instance: AppInstance, limit: number, skip: number): Promise<{ page: ChatPage, listing: ChatListing }> {
+  const listing = await chatListing(instance, { limit, offset: skip })
   return {
-    chats: await withPreviews(instance, listing.chats),
-    hasMore: skip + take < listing.total,
+    page: { chats: await withPreviews(instance, listing.chats), hasMore: skip + limit < listing.total },
+    listing,
   }
 }
 
@@ -492,10 +521,11 @@ export interface ChatTablePage extends ChatPage {
  * One page of the chats table, searched, sorted and sliced over the whole
  * account, here rather than in the browser.
  *
- * The default view — newest activity first, no search — is exactly the SQL
- * order, so it is paged in SQL. Anything that searches or sorts by *name* has to
- * name every chat first, and names are not in the database this reads, so those
- * load the whole listing (up to `CHAT_LISTING_CAP`) and sort it here.
+ * The default view — newest activity first, no search — is exactly the
+ * listing's order, so only the page is named. Anything that searches or sorts
+ * by *name* has to name every chat first, and names are not in the database
+ * this reads, so those name the whole listing (up to `CHAT_LISTING_CAP`) and
+ * sort it here. Both slice the same cached listing (`chatListing`).
  */
 export async function listChatsPage(instance: AppInstance, query: ChatTableQuery = {}): Promise<ChatTablePage> {
   const { q, sort = 'last', dir = sort === 'last' ? 'desc' : 'asc', limit = 100, page = 1 } = query
@@ -503,10 +533,9 @@ export async function listChatsPage(instance: AppInstance, query: ChatTableQuery
   const needle = q?.trim().toLowerCase()
 
   if (!needle && sort === 'last' && dir === 'desc') {
-    const listing = await chatListing(instance, { limit, offset: skip })
+    const { page, listing } = await activityPage(instance, limit, skip)
     return {
-      chats: await withPreviews(instance, listing.chats),
-      hasMore: skip + limit < listing.total,
+      ...page,
       total: listing.total,
       truncated: listing.truncated,
       incomplete: listing.failed,
@@ -524,7 +553,8 @@ export async function listChatsPage(instance: AppInstance, query: ChatTableQuery
       )
     : listing.chats
 
-  const sorted = [...matching].sort(chatComparator(sort, dir))
+  // `filter` and `nameChats` both return fresh arrays, so sorting in place is safe.
+  const sorted = matching.sort(chatComparator(sort, dir))
 
   return {
     chats: await withPreviews(instance, sorted.slice(skip, skip + limit)),
@@ -547,14 +577,22 @@ function missingLast<T>(a: T | undefined, b: T | undefined, cmp: (x: T, y: T) =>
   return dir * cmp(a, b)
 }
 
+/** Built once: `localeCompare` without a collator builds one per call, and a name sort makes ~140k calls on 10k chats. */
+const nameCollator = new Intl.Collator()
+const numberCollator = new Intl.Collator(undefined, { numeric: true })
+
 function chatComparator(sort: ChatSortKey, dir: 'asc' | 'desc'): (a: ChatSummary, b: ChatSummary) => number {
   const sign = dir === 'asc' ? 1 : -1
-  const byName = (a: ChatSummary, b: ChatSummary) => a.name.localeCompare(b.name)
+  const byName = (a: ChatSummary, b: ChatSummary) => nameCollator.compare(a.name, b.name)
+  // Parsed once per chat, not twice per comparison.
+  const parsed = new Map<ChatSummary, number | undefined>()
   const activity = (chat: ChatSummary) => {
+    if (parsed.has(chat)) return parsed.get(chat)
     const iso = chat.lastMessageAt ?? chat.updatedAt
-    if (!iso) return undefined
-    const ms = Date.parse(iso)
-    return Number.isNaN(ms) ? undefined : ms
+    const ms = iso ? Date.parse(iso) : Number.NaN
+    const value = Number.isNaN(ms) ? undefined : ms
+    parsed.set(chat, value)
+    return value
   }
 
   switch (sort) {
@@ -562,7 +600,7 @@ function chatComparator(sort: ChatSortKey, dir: 'asc' | 'desc'): (a: ChatSummary
       return (a, b) => sign * byName(a, b)
     case 'number':
       // Sorted by what the column shows, which for a LID chat is the revealed number.
-      return (a, b) => missingLast(a.number ?? a.phoneNumber, b.number ?? b.phoneNumber, (x, y) => x.localeCompare(y, undefined, { numeric: true }), sign) || byName(a, b)
+      return (a, b) => missingLast(a.number ?? a.phoneNumber, b.number ?? b.phoneNumber, numberCollator.compare, sign) || byName(a, b)
     case 'type':
       return (a, b) => sign * (Number(a.isGroup) - Number(b.isGroup)) || byName(a, b)
     case 'last':
@@ -1062,9 +1100,6 @@ async function fetchContacts(instance: AppInstance, evolution: EvolutionClient):
 
   return byJid
 }
-
-/** Shared, so keep it immutable. */
-const emptyGroups: Map<string, GroupInfo> = new Map()
 
 // ── internals ──────────────────────────────────────────────────────────────
 

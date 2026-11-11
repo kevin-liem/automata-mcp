@@ -26,14 +26,15 @@ export interface StateDisplay {
  * words for those — "scan a QR code" — are the wrong instruction for a phone that
  * is still linked. The server tells the two apart (`sessionLost`); this only
  * chooses what to say. `flapping` likewise: a reconnect loop reads `open`, and
- * only the server can tell it from a healthy connection. `operatorAlerted`
+ * only the server can tell it from a healthy connection — as is `stalled`, a
+ * dead socket under an `open` that never wavers. `operatorAlerted`
  * (server-decided, hosted offering only) means the fix is the deployment's and
  * already under way, so the hint stops naming a restart the reader cannot do.
  */
 export function describeState(
   state: ConnectionState,
   kind: InstanceKind,
-  options: { lost?: boolean, flapping?: boolean, operatorAlerted?: boolean } = {},
+  options: { lost?: boolean, flapping?: boolean, stalled?: boolean, operatorAlerted?: boolean } = {},
 ): StateDisplay {
   switch (kind) {
     case 'postgres':
@@ -58,6 +59,16 @@ export function describeState(
           hint: options.operatorAlerted
             ? 'Evolution keeps reconnecting this account. Messages may be missed until we restart the service — we have been alerted, and there is nothing you need to do.'
             : 'Evolution keeps reconnecting this account. Messages may be missed until the Evolution service is restarted.',
+        }
+      }
+      // Reads `open` everywhere and sends nothing (#205). Same fix as a loop.
+      if (options.stalled) {
+        return {
+          label: 'Stuck',
+          variant: 'destructive',
+          hint: options.operatorAlerted
+            ? 'Evolution\'s session for this account is stuck: nothing is sent or received until we restart the service — we have been alerted, and there is nothing you need to do.'
+            : 'Evolution\'s session for this account is stuck: nothing is sent or received until the Evolution service is restarted.',
         }
       }
       if (options.lost && state !== 'open') {

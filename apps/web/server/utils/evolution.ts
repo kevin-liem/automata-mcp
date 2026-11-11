@@ -196,6 +196,16 @@ export function useEvolutionClient(): EvolutionClient {
 }
 
 /**
+ * The entries of Evolution's error envelope (`data.response.message`), which
+ * is a string or an array of strings and objects depending on the route.
+ * Re-verify on an Evolution tag bump.
+ */
+export function evolutionErrorEntries(error: unknown): unknown[] {
+  const raw = (error as { data?: { response?: { message?: unknown } } } | undefined)?.data?.response?.message
+  return Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]
+}
+
+/**
  * Turn a failed `POST /message/sendText` into an answer the caller can act on.
  *
  * ofetch's own message is only `[POST] "…": 400 Bad Request`, and the MCP
@@ -211,13 +221,14 @@ export function useEvolutionClient(): EvolutionClient {
  *     reading `Error: Connection Closed`
  *
  * Each gets its own status. A handled error is invisible to Nitro, so every
- * branch logs the classification (never the message text or recipient).
+ * branch logs the classification (never the message text or recipient). The
+ * dead-socket branch also records the evidence `stalled` is built from
+ * (`noteSocketDead`, socket-evidence.ts).
  * Re-verify the envelope and those three throw sites on an Evolution tag bump.
  */
 export function relayEvolutionSendError(error: unknown, number: string, instanceId: string): never {
   const status = httpStatusOf(error)
-  const raw = (error as { data?: { response?: { message?: unknown } } } | undefined)?.data?.response?.message
-  const entries = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]
+  const entries = evolutionErrorEntries(error)
 
   if (status === 400) {
     if (entries.some(e => typeof e === 'object' && e !== null && (e as { exists?: unknown }).exists === false)) {
@@ -234,11 +245,15 @@ export function relayEvolutionSendError(error: unknown, number: string, instance
     }
 
     const texts = entries.filter((e): e is string => typeof e === 'string' && e.trim() !== '')
-    if (texts.some(t => /connection closed|not connected|connection lost|timed out/i.test(t))) {
+    if (namesDeadSocket(texts) || texts.some(t => /timed out/i.test(t))) {
       console.error(`[evolution] send on connection ${instanceId} failed: WhatsApp socket not connected`)
+      // The evidence a dead socket under a live `open` leaves (#205) — the
+      // status read turns it into `stalled`. Not on `Timed Out`, which a
+      // healthy socket can answer too; see socket-evidence.ts.
+      if (namesDeadSocket(texts)) noteSocketDead({ id: instanceId }, 'send')
       throw createError({
         statusCode: 503,
-        message: 'The WhatsApp connection is down, so the message was not sent. Check get-connection-status: when sessionLost is true the account owner can press Reconnect on the connection\'s page in the web app.',
+        message: 'The WhatsApp connection is down, so the message was not sent. Check get-connection-status: when sessionLost is true the account owner can press Reconnect on the connection\'s page in the web app; when stalled is true the Evolution service has to be restarted, and retrying the send will not help until it is.',
       })
     }
 

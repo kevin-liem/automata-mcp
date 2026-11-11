@@ -2,7 +2,6 @@ import { z } from 'zod'
 
 /** Image types every MCP client renders. Anything else goes back as an embedded file. */
 const INLINE_IMAGE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
-const MAX_TEXT_CHARS = 100_000
 
 /**
  * Fetch one attachment's bytes from the mail server and hand them back in the
@@ -14,6 +13,11 @@ const MAX_TEXT_CHARS = 100_000
  * prevent. The size cap is checked against BODYSTRUCTURE first, so an
  * oversized file is refused without downloading it, and enforced again on the
  * bytes, since a server's reported size is a claim.
+ *
+ * That byte cap is the only limit, whatever the type: text comes back whole,
+ * as PDFs and spreadsheets do. A text file clipped at a character count was a
+ * dead end — no offset to continue from — while the same data as a
+ * spreadsheet arrived in full.
  */
 export default defineKindTool({
   name: 'get-email-attachment',
@@ -24,8 +28,8 @@ export default defineKindTool({
     + 'read-email, and a `part` from that email\'s attachment list. Images (PNG, JPEG, GIF, WebP) '
     + 'come back as images, text files (plain text, CSV, JSON, XML, HTML, calendar invites) as '
     + 'text, and anything else — PDFs, Office documents, archives — as an embedded file with its '
-    + 'type. Attachments larger than the limit are refused with their size. Fetch only what the '
-    + 'task needs: each call downloads the file from the mail server.',
+    + 'type. Every file comes back whole; attachments larger than the limit are refused with their '
+    + 'size. Fetch only what the task needs: each call downloads the file from the mail server.',
   annotations: {
     readOnlyHint: true,
     destructiveHint: false,
@@ -86,12 +90,10 @@ export default defineKindTool({
     }
 
     if (isTextual(file.mimeType)) {
-      const text = file.data.toString('utf8')
-      const clipped = text.length > MAX_TEXT_CHARS
       return {
         content: [
-          { type: 'text' as const, text: JSON.stringify({ ...meta, ...(clipped && { truncatedAtChars: MAX_TEXT_CHARS }) }, null, 2) },
-          { type: 'text' as const, text: clipped ? text.slice(0, MAX_TEXT_CHARS) : text },
+          { type: 'text' as const, text: JSON.stringify(meta, null, 2) },
+          { type: 'text' as const, text: file.data.toString('utf8') },
         ],
       }
     }

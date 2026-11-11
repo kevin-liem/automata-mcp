@@ -18,8 +18,12 @@
  * A WhatsApp connection also carries `historyLimitedByPlan`: whether its plan
  * imports only recent history, so the dashboard can say so and offer Billing
  * instead of a full-history import the server would refuse. Decided by
- * `whatsappHistoryLimited`, not by the browser. A policy, not a fact about the
+ * `historyLimited`, not by the browser. A policy, not a fact about the
  * stored history — that is `recentHistoryOnly()`, which the MCP tools report.
+ *
+ * A Telegram connection carries it too: linking
+ * it now would fetch only the last `TELEGRAM_RECENT_HISTORY_DAYS` days. The
+ * fact for an account already linked is the bridge's `sync.historyDays`.
  */
 export default defineEventHandler(async (event) => {
   const { instance } = await requireReadableInstance(event, getRouterParam(event, 'id'))
@@ -27,7 +31,7 @@ export default defineEventHandler(async (event) => {
 
   const [state, historyLimitedByPlan] = await Promise.all([
     connectionState(instance, { freshCounts }),
-    instanceKind(instance) === 'whatsapp' ? whatsappHistoryLimited(instance) : undefined,
+    historyLimited(instance),
   ])
 
   return {

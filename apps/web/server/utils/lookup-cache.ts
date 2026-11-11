@@ -167,3 +167,15 @@ export function staleWhileRevalidate<T>(options: StaleCacheOptions<T>) {
     return cached?.value ?? options.empty
   }
 }
+
+/**
+ * Set `key` as the newest entry of an insertion-ordered map, then drop the
+ * oldest entries until `max` remain. The bounded-map idiom every in-process
+ * memo here uses: re-inserting moves a key to the end, so the first key is
+ * always the one touched longest ago.
+ */
+export function rememberBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > max) map.delete(map.keys().next().value as K)
+}

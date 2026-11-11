@@ -29,7 +29,9 @@ account linked by QR code, so it lives in this repo. It is built on
    `NUXT_TELEGRAM_ADMIN_KEY` to the same value as the admin key.
 3. **Give the bridge its database:** `TELEGRAM_BRIDGE_DATABASE_URL`, required —
    the bridge refuses to start without it (see
-   [Where the data lives](#where-the-data-lives)).
+   [Where the data lives](#where-the-data-lives)). It listens on
+   `TELEGRAM_BRIDGE_PORT`, else `PORT`, else 8095 — on Railway, which injects
+   `PORT=8080`, set `TELEGRAM_BRIDGE_PORT` so the app's URL keeps working.
 4. **Point the app at it:** `NUXT_TELEGRAM_URL` and
    `NUXT_TELEGRAM_DATABASE_URL`. The bridge reports a dropped or restored
    connection to `NUXT_TELEGRAM_WEBHOOK_URL`, which drives disconnect alerts and
@@ -62,6 +64,19 @@ the bridge (it re-grants `SELECT` at every start: on `messages` whole, on `chats
 and `users` column by column so access hashes and phone numbers stay out, and
 never on `sessions`), and use that role in `NUXT_TELEGRAM_DATABASE_URL`.
 
+The bridge migrates its schema at start, in one transaction. Migration `0003`
+adds an index on `telegram.messages` and holds a write lock on that table while it
+builds, so sync writes wait for it. With millions of messages, build it by hand
+beforehand without the lock and the migration skips it:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS messages_live_by_session
+  ON telegram.messages (session_id) WHERE deleted_at IS NULL;
+```
+
+If that build fails, it leaves an invalid index under the same name. Drop that
+index and build it again before you deploy.
+
 ## What syncs
 
 Private chats, bots, groups, supergroups (including forum topics) and channels —
@@ -76,6 +91,32 @@ first, stopping at `TELEGRAM_BACKFILL_MAX_PER_CHAT` messages (default 2000) or
 channels unless `TELEGRAM_BACKFILL_BROADCAST=true`. An unofficial client that
 hammers history is how an account gets restricted. The read tools say when a
 chat's history stops at what was synced rather than at its first message.
+
+The day limit is a limit on what is stored, not only on how far backfill walks:
+the page that crosses it is cut at it, and a chat whose newest message is older
+than the limit gets no message from the dialog list either. Live messages and
+the catch-up after a restart are never cut.
+
+The app can lower the limit for one session: it sends `backfillDays` with
+`POST /sessions/:id/pair`, the bridge stores it on the session, and the lower of
+it and `TELEGRAM_BACKFILL_DAYS` applies — a session can be held below the
+operator's setting, never lifted above it. The hosted Free plan uses this for
+90 days (see [Plans and billing](billing.md)). Because it is stored at pairing,
+it applies to the account linked then; `GET /sessions/:id/state` reports the
+limit in force as `sync.backfillDays`, which the dashboard and
+`get-telegram-status` (`sync.historyDays`) show.
+
+**A very busy account is caught up rather than queued.** Live updates are
+written in the order they arrive. When they come in faster than they are written
+— more than 5,000 waiting, or the oldest waiting two minutes — the bridge stops
+holding channel and supergroup updates in memory and fetches them from Telegram
+again once it has caught up, one channel at a time. Nothing is lost by this;
+where Telegram itself will not go back far enough, the chat is marked as having a
+gap, as after any other outage. Private chats and basic groups are never skipped.
+While a session has a backlog the bridge logs it once a minute (with its heap
+size), and `GET /health` reports the totals under `sync`: `pending`,
+`maxPending`, `oldestPendingSeconds`, `sheddingSessions`, `dirtyChannels`,
+`heapUsedMb`. A backlog that never drains means the database cannot keep up.
 
 **Secret chats are never visible.** They exist only on the devices that took
 part in them and cannot be synced by any client.

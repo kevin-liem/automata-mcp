@@ -44,6 +44,35 @@ export function toolServesKind(name: string, kind: InstanceKind): boolean {
   return TOOL_KINDS.get(name)?.includes(kind) ?? false
 }
 
+/** Whether a call counts against the separate, lower budget for costly tools. */
+export type ExpensiveMarker = true | ((args: Record<string, unknown>) => boolean)
+
+/**
+ * Tools that load a connection's backend far more than a page read — a scan
+ * over every message, an arbitrary query, a server-side body search — keyed by
+ * name like `TOOL_KINDS` and filled the same way. Read by the MCP rate limit
+ * (mcp-rate-limit.ts) from the request body, before the tool runs, since a
+ * refusal there is a 429 rather than a tool result.
+ */
+const TOOL_COST = new Map<string, ExpensiveMarker>()
+
+/**
+ * Whether this call to `name` with these arguments is an expensive one. A
+ * marker that throws counts as expensive; an unknown tool does not, since the
+ * toolkit refuses it before anything runs.
+ */
+export function isExpensiveCall(name: string, args: Record<string, unknown>): boolean {
+  const marker = TOOL_COST.get(name)
+  if (!marker) return false
+  if (marker === true) return true
+  try {
+    return marker(args)
+  }
+  catch {
+    return true
+  }
+}
+
 /**
  * The optional `reason` argument every tool takes: the model's one-sentence
  * account of why it is calling the tool. MCP never sends the user's prompt, so
@@ -108,12 +137,19 @@ export function defineKindTool<
      */
     group?: string
     available?: () => boolean
+    /**
+     * Counts against the per-connection budget for costly tools as well as
+     * the ordinary ones (see mcp-rate-limit.ts). A function decides from the
+     * raw arguments — unvalidated, so it must tolerate anything.
+     */
+    expensive?: ExpensiveMarker
   },
 ): ToolDefinition<InputSchema, OutputSchema> {
-  const { kind, group, available, ...rest } = definition
+  const { kind, group, available, expensive, ...rest } = definition
   const kinds: readonly InstanceKind[] = Array.isArray(kind) ? kind : [kind as InstanceKind]
 
   TOOL_KINDS.set(rest.name, kinds)
+  if (expensive) TOOL_COST.set(rest.name, expensive)
 
   // A tool argument of the same name would be shadowed by the injected one and
   // then stripped before its handler ran — fail at load instead.

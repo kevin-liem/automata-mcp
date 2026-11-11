@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
+import { TELEGRAM_RECENT_HISTORY_DAYS } from '#shared/history'
 import {
   AppleIcon,
   CloudIcon,
@@ -27,7 +28,7 @@ const busy = ref(false)
 // An organization at its connection limit is told so before it fills in a
 // form the server will refuse. Never fetched without limits, so a self-hosted
 // deployment makes no such request.
-const { limited, billing, recentHistoryOnly } = usePlan()
+const { limited, recentHistoryOnly } = usePlan()
 const { data: billingInfo } = await useFetch<{ usage: { connections: number }, limits: { connections?: number } | null }>(
   '/api/billing',
   { immediate: limited.value, server: false },
@@ -431,6 +432,15 @@ async function create() {
                   </p>
                 </template>
               </NoticeCard>
+              <!-- Same flag as WhatsApp's locked box; enforced at pairing by
+                   startTelegramPairing, so this is wording, not control. -->
+              <p v-if="recentHistoryOnly" class="text-xs text-muted-foreground">
+                Your plan syncs the last {{ TELEGRAM_RECENT_HISTORY_DAYS }} days of
+                history when the account is linked; everything after that is kept.
+                <UpgradeLink>
+                  to sync further back.
+                </UpgradeLink>
+              </p>
             </template>
 
             <div v-if="ownServer" class="space-y-4 rounded-md border p-3">
@@ -557,12 +567,9 @@ async function create() {
                 <p v-if="fullHistoryLocked" class="text-xs text-muted-foreground">
                   Your plan imports the recent part of your conversations when the
                   phone is linked.
-                  <template v-if="billing">
-                    <NuxtLink to="/billing" class="underline underline-offset-2">
-                      Upgrade
-                    </NuxtLink>
+                  <UpgradeLink>
                     to import an account's full history.
-                  </template>
+                  </UpgradeLink>
                 </p>
                 <p v-else class="text-xs text-muted-foreground">
                   WhatsApp hands over past conversations only while the phone is

@@ -3,13 +3,13 @@
  *
  * Explicit, never on page load: pairing binds a real account, so it starts only
  * when an admin asks. Idempotent while a flow is already running; the bridge
- * abandons a flow nobody completes within five minutes.
+ * abandons a flow nobody completes within five minutes. The history cap the
+ * plan calls for travels with the request — see `startTelegramPairing`.
  */
 export default defineEventHandler(async (event) => {
   const { instance } = await requireManagedInstanceOfKind(event, getRouterParam(event, 'id'), 'telegram')
-  const bridge = telegramBridgeForInstance(instance)
   try {
-    return pairingView(await bridge.pair())
+    return pairingView(await startTelegramPairing(instance))
   }
   catch (error) {
     relayBridgeError(error, 'start pairing')

@@ -21,6 +21,9 @@ export default defineKindTool({
   name: 'run-query',
   kind: ['postgres'],
   group: 'sql',
+  // An arbitrary query on the user's database. `explain: true` only plans it, and is
+  // what the timeout hint sends the model to, so it stays on the ordinary budget.
+  expensive: args => args.explain !== true,
   title: 'Run a read-only SQL query',
   description:
     'Run one read-only SQL statement and return its rows. Exactly one statement — '

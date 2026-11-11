@@ -73,15 +73,12 @@ export async function loadOrgLimits(db: Db, orgId: string): Promise<OrgLimits | 
 }
 
 /**
- * Whether the organization may ask WhatsApp for an account's full history at
- * pairing. Only the flag — which connections it applies to (those on the
- * deployment's own server) is `whatsappHistoryLimited` in instances.ts.
+ * Whether the organization imports only recent history at pairing. Only the
+ * flag — which connections it applies to (those on the deployment's own
+ * backend) is `historyLimited` in instances.ts.
  */
 export async function orgRecentHistoryOnly(db: Db, orgId: string): Promise<boolean> {
-  const [row] = await db<{ recent_history_only: boolean }[]>`
-    SELECT recent_history_only FROM app.organizations WHERE id = ${orgId}
-  `
-  return row?.recent_history_only === true
+  return (await loadOrgLimits(db, orgId))?.recent_history_only === true
 }
 
 /**

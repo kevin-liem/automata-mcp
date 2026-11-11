@@ -13,6 +13,11 @@ The all-in-one image builds the web app and the bridge from the same commit as
 the other two, on top of Evolution's pinned image, so one version names the same
 code in all three.
 
+The hosted-only cloud service (`apps/cloud/Dockerfile`) is neither published nor
+built by these workflows, so the release check does not catch a broken cloud
+Dockerfile; the hosted deployment builds it from source (see
+[Plans and billing](billing.md)).
+
 Each release is tagged `X.Y.Z`, `X.Y`, `X`, `latest` and `sha-<commit>`, for
 `linux/amd64`. **Point a service or a template at the major tag (`:1`), not
 `:latest`.** The web service migrates its schema at boot and migrations only go
@@ -82,7 +87,9 @@ One-time setup on GitHub, which no workflow can do for you:
   a new secret together.
 
 - Create the `prod` branch from `main`, and protect it: require a pull request
-  and the `release-check` jobs (`version`, `build`).
+  and the `release-check` checks: `version` and the three `build (…)` matrix
+  checks, one per image — GitHub names each matrix leg separately, so a bare
+  `build` never matches.
 - After the first release, open each package under the repository's
   **Packages** and set its visibility to **Public**. GHCR creates packages
   private, and Railway — or anyone deploying a template or running the

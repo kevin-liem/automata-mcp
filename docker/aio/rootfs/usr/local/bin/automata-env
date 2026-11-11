@@ -12,7 +12,7 @@ AUTOMATA_DATA=/data
 AUTOMATA_SECRETS=$AUTOMATA_DATA/secrets
 
 # Internal ports. Off the usual 8080/8095 because the web app follows $PORT and
-# platforms inject PORT=8080; the web run script refuses a PORT equal to any.
+# platforms inject PORT=8080; the init-data script refuses a PORT equal to any.
 AUTOMATA_PG_PORT=5432
 AUTOMATA_REDIS_PORT=6379
 AUTOMATA_EVOLUTION_PORT=18080
@@ -69,6 +69,7 @@ export NUXT_SMTP_PASSWORD=${NUXT_SMTP_PASSWORD:-${SMTP_PASSWORD:-}}
 export NUXT_SMTP_TLS=${NUXT_SMTP_TLS:-${SMTP_TLS:-false}}
 export NUXT_MAIL_FROM=${NUXT_MAIL_FROM:-${MAIL_FROM:-}}
 export NUXT_MAIL_FROM_NAME=${NUXT_MAIL_FROM_NAME:-${MAIL_FROM_NAME:-DOPE}}
+export NUXT_OPS_ALERT_EMAIL=${NUXT_OPS_ALERT_EMAIL:-${OPS_ALERT_EMAIL:-}}
 export NUXT_SIGNUP=${NUXT_SIGNUP:-${SIGNUP:-invite-only}}
 export NUXT_SIGNUP_CODE=${NUXT_SIGNUP_CODE:-${SIGNUP_CODE:-}}
 export NUXT_EMAIL_VERIFICATION=${NUXT_EMAIL_VERIFICATION:-${EMAIL_VERIFICATION:-auto}}

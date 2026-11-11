@@ -1,5 +1,6 @@
 import { assertNever } from '#shared/connection'
 import { randomBytes } from 'node:crypto'
+import { rememberBounded } from './lookup-cache'
 import type { AppInstance } from './app-db'
 import type { EvolutionInstanceRecord } from './evolution-db'
 import type { ImapSecurity, ImapTarget } from './imap-client'
@@ -34,7 +35,15 @@ export type InstanceStatus = {
    */
   flapping?: boolean
   /**
-   * Set only with `flapping`: the deployment's operator is alerted to the loop
+   * The account reads `open` — live and stored — but a send or a group lookup
+   * since Evolution last opened its socket failed with `Connection Closed`:
+   * Evolution's own session for the account is stuck. Reconnect cannot end it
+   * (it answers 409 from `open`); restarting the Evolution service does. See
+   * `socketStalled` and socket-evidence.ts (#205).
+   */
+  stalled?: boolean
+  /**
+   * Set only with `flapping` or `stalled`: the deployment's operator is alerted
    * by itself and will restart Evolution, so the reader has nothing to do.
    * Hosted offering only — `operatorAlertedAboutLoop` in alerts.ts is the rule,
    * shared with the outage mail so the two cannot disagree.
@@ -251,7 +260,6 @@ export async function provisionWhatsappInstance(
 
   const admin = createEvolutionClient(creds)
   const name = generateInstanceName()
-
 
   const created = await admin<{ instance?: { instanceId?: string }, hash?: string | { apikey?: string } }>(
     '/instance/create',
@@ -683,7 +691,7 @@ export type InstanceHealth = Omit<InstanceStatus, 'stats'> & {
 }
 
 /**
- * `getInstanceStatus` without the counts: state, `sessionLost`, `flapping`,
+ * `getInstanceStatus` without the counts: state, `sessionLost`, `flapping`, `stalled`,
  * `ownerJid`, profile. For the alert sweep and webhook evaluation, which run
  * once per connection every few minutes and read none of the counts — so they
  * never cause one to be computed.
@@ -748,9 +756,11 @@ async function storePaired(instance: AppInstance): Promise<void> {
  * reaper deletes it. Records `paired_at` when the answer is yes.
  *
  *   paired    Evolution's live state is `open`, its row carries an `ownerJid`,
- *             or its database holds messages for the account. The last one is
- *             what protects a connection paired before `paired_at` existed and
- *             logged out since: no `ownerJid`, but its history is still there.
+ *             or its database holds messages for the account. `ownerJid`
+ *             survives a logout: 2.3.7 writes it only when the socket opens and
+ *             never clears it (logout's `cleaningUp` sets `connectionStatus`
+ *             alone). The messages check is a second line for a row that lost
+ *             it some other way.
  *   unpaired  Evolution answered, and none of the above. Includes Evolution
  *             no longer knowing the instance at all (404).
  *   unknown   Something could not be asked. Never deleted on.
@@ -923,11 +933,74 @@ function nextChurn(stored: RowChurn, read: { columnOpen: boolean, rowWrittenAt?:
   return { since: continuing ? stored.since : at, seenAt: at }
 }
 
+// ── dead sockets under a live `open` ────────────────────────────────────────
+/**
+ * How long dead-socket evidence counts when the read cannot see when Evolution
+ * last wrote the row — a failed or denied `"updatedAt"` read on a connection
+ * that has a message database. Long enough to ride out one failed read, short
+ * enough that evidence nobody can check against a reopen lapses on its own.
+ */
+const STALL_UNCHECKED_MS = 30 * 60_000
+/**
+ * Clock allowance between Evolution's `updatedAt` (its own host's clock, set by
+ * Prisma) and `socket_dead_seen_at` (the app database's `now()`). A reopen
+ * written within this of the evidence counts as after it: a send that lands in
+ * a brief drop Evolution recovers from by itself must not read as a stuck
+ * session. Evidence from a socket that died again right after reopening is
+ * written once more a minute later, which is past this.
+ */
+const STALL_CLOCK_SKEW_MS = 30_000
+
+/**
+ * Judge the stored dead-socket evidence (socket-evidence.ts) against one status
+ * read: is Evolution's session for this account stuck — `stalled` — and is the
+ * evidence spent?
+ *
+ *   - Only an account that reads `open` live **and** stored can be stalled.
+ *     Anything else is an ordinary outage `state` / `sessionLost` already
+ *     reports; a known non-`open` live state also spends the evidence, since
+ *     the socket that failed is gone and a reopen starts afresh.
+ *   - A row written after the evidence (less `STALL_CLOCK_SKEW_MS`) means
+ *     Evolution opened a socket since — a restart, a Reconnect, its own retry —
+ *     so the evidence is about a socket that no longer exists: spent. 2.3.7
+ *     writes the `"Instance"` row on every open (see `rowChurn`), and a stuck
+ *     session writes nothing, which is what makes this the test.
+ *   - No message database at all: never stalled. Nothing could tell a stuck
+ *     session from a brief drop that already recovered, and mailing an
+ *     organization about the second is the wrong trade — `flapping` makes the
+ *     same one.
+ *   - A message database whose write time this read could not get: the
+ *     evidence alone, for `STALL_UNCHECKED_MS`, so one failed read neither
+ *     ends an alerted episode (a false "connected again") nor keeps an old one
+ *     alive for ever.
+ *
+ * Pure: the caller clears spent evidence (`forgetSocketEvidence`).
+ */
+export function socketStalled(
+  seenAt: string | undefined,
+  read: { live?: ConnectionState, columnOpen: boolean, canReadRow: boolean, rowWrittenAt?: string },
+  now = Date.now(),
+): { stalled: boolean, spent: boolean } {
+  const seen = seenAt ? Date.parse(seenAt) : Number.NaN
+  if (Number.isNaN(seen)) return { stalled: false, spent: false }
+
+  if (read.live !== 'open' || !read.columnOpen) {
+    const knownDown = read.live === 'close' || read.live === 'connecting'
+    return { stalled: false, spent: knownDown }
+  }
+  if (!read.canReadRow) return { stalled: false, spent: false }
+
+  const writtenAt = read.rowWrittenAt ? Date.parse(read.rowWrittenAt) : Number.NaN
+  if (Number.isNaN(writtenAt)) return { stalled: now - seen < STALL_UNCHECKED_MS, spent: false }
+  if (writtenAt > seen - STALL_CLOCK_SKEW_MS) return { stalled: false, spent: true }
+  return { stalled: true, spent: false }
+}
+
 /** Drop what this module has cached about one connection. */
 export function forgetInstanceStatus(instanceId: string): void {
   apiRowCache.delete(instanceId)
   countsCache.delete(instanceId)
-  historySettingCache.delete(instanceId)
+  historySettingCache.forget(instanceId)
   holdRefreshedAt.delete(instanceId)
 }
 
@@ -971,11 +1044,23 @@ async function readStatus(
     rowWrittenAt,
   })
 
+  // A loop is the stronger diagnosis and names the same fix; reporting both
+  // would only say it twice.
+  const socket = socketStalled(instance.socket_dead_seen_at, {
+    live,
+    columnOpen: row.connectionStatus === 'open',
+    canReadRow: viaSql,
+    rowWrittenAt,
+  })
+  if (socket.spent && instance.socket_dead_seen_at) forgetSocketEvidence(instance.id, instance.socket_dead_seen_at)
+  const stalled = socket.stalled && !flapping
+
   return {
     state: live ?? 'unknown',
     sessionLost: row.connectionStatus === 'open' && live !== undefined && live !== 'open',
     flapping,
-    ...(flapping && operatorAlertedAboutLoop(instance) && { operatorAlerted: true }),
+    ...(stalled && { stalled: true }),
+    ...((flapping || stalled) && operatorAlertedAboutLoop(instance) && { operatorAlerted: true }),
     rowChurn: churn,
     profileName: row.profileName ?? undefined,
     profilePicUrl: row.profilePicUrl ?? undefined,
@@ -1098,7 +1183,7 @@ async function cachedSqlCounts(
 
 /** A count that ran out of time, or never got a turn — not a broken read. */
 function isSlowCount(error: unknown): boolean {
-  return isStatementTimeout(error) || (error as { statusCode?: unknown } | undefined)?.statusCode === 429
+  return isStatementTimeout(error) || httpStatusOf(error) === 429
 }
 
 /** Said once per five minutes like the others; no grant is involved. */
@@ -1483,26 +1568,9 @@ export async function logoutInstance(instance: AppInstance): Promise<void> {
  */
 export async function enableFullHistorySync(instance: AppInstance): Promise<void> {
   // Before anything changes: refused, the account stays linked.
-  if (await whatsappHistoryLimited(instance)) throw fullHistoryLimitError()
+  if (await historyLimited(instance)) throw fullHistoryLimitError()
 
-  const evolution = evolutionClientForInstance(instance)
-  const name = encodeURIComponent(instance.name)
-
-  // Read-modify-write, never a partial write. Evolution's `setSettings` copies
-  // every field of the body onto the live instance's in-memory settings, so a key
-  // left out of the request becomes `undefined` there until the process restarts
-  // — omitting `groupsIgnore` silently un-sets it on a running socket. Its schema
-  // also *requires* all six booleans, so a partial body is a 400 anyway.
-  // Not caught: `find` answers `null` when the instance has no settings row yet,
-  // so anything thrown here is a real failure. Swallowing it would mean writing
-  // defaults over settings we simply failed to read.
-  const current = await evolution<EvolutionSettings | null>(`/settings/find/${name}`)
-
-  await evolution(`/settings/set/${name}`, {
-    method: 'POST',
-    body: settingsBody(current, { syncFullHistory: true }),
-  })
-  historySettingCache.delete(instance.id)
+  await writeSyncFullHistory(instance, true)
 
   // The new setting only reaches Baileys when the socket is next constructed, and
   // that only counts as a fresh device link — the thing that triggers a history
@@ -1593,20 +1661,57 @@ export async function deleteInstance(
 }
 
 /**
- * Whether this WhatsApp connection may import only recent history: its
- * organization is limited to that (`recent_history_only`, which the cloud
- * service sets for Free) **and** it lives on the deployment's own Evolution
- * server. A bring-your-own server stores history on the user's disk, which is
- * what the limit is about, so it never applies there.
+ * Whether this connection may import only recent history: its organization is
+ * limited to that (`recent_history_only`, which the cloud service sets for
+ * Free) **and** it lives on the deployment's own backend — Evolution server for
+ * WhatsApp, bridge for Telegram. A bring-your-own backend stores history on the
+ * user's disk, which is what the limit is about, so it never applies there.
+ * `undefined` for kinds that import no history.
  *
- * The one place the rule lives for an existing connection — the full-history
- * import and pairing ask here. Creating one asks the same question before the
- * row exists, in `provisionWhatsappInstance`: no `server` there is exactly
+ * The one place the rule lives for an existing connection: WhatsApp's
+ * full-history import and pairing, Telegram's pairing
+ * (`startTelegramPairing`) and the dashboard's `historyLimitedByPlan` ask here.
+ * Creating a WhatsApp connection asks the same question before the row exists,
+ * in `provisionWhatsappInstance`: no `server` there is exactly
  * `onDeploymentServer` here.
  */
-export async function whatsappHistoryLimited(instance: AppInstance): Promise<boolean> {
-  if (!onDeploymentServer(instance)) return false
+export async function historyLimited(instance: AppInstance): Promise<boolean | undefined> {
+  const kind = instanceKind(instance)
+  let ownBackend: boolean
+  switch (kind) {
+    case 'whatsapp': ownBackend = onDeploymentServer(instance); break
+    case 'telegram': ownBackend = onDeploymentBridge(instance); break
+    case 'postgres':
+    case 'imap': return undefined
+    default: return assertNever(kind)
+  }
+  if (!ownBackend) return false
   return await orgRecentHistoryOnly(await appDb(), instance.org)
+}
+
+/**
+ * Set `syncFullHistory` on the connection's Evolution instance. Answers whether
+ * anything was written: a value already in place is left alone.
+ *
+ * Read-modify-write, never a partial write. Evolution's `setSettings` copies
+ * every field of the body onto the live instance's in-memory settings, so a key
+ * left out of the request becomes `undefined` there until the process restarts
+ * — omitting `groupsIgnore` silently un-sets it on a running socket. Its schema
+ * also *requires* all six booleans, so a partial body is a 400 anyway.
+ * Not caught: `find` answers `null` when the instance has no settings row yet
+ * (Evolution's default, off), so anything thrown here is a real failure.
+ * Swallowing it would mean writing defaults over settings we failed to read.
+ */
+async function writeSyncFullHistory(instance: AppInstance, on: boolean): Promise<boolean> {
+  const current = await readEvolutionSettings(instance)
+  if ((current?.syncFullHistory === true) === on) return false
+
+  await evolutionClientForInstance(instance)(`/settings/set/${encodeURIComponent(instance.name)}`, {
+    method: 'POST',
+    body: settingsBody(current, { syncFullHistory: on }),
+  })
+  historySettingCache.forget(instance.id)
+  return true
 }
 
 /**
@@ -1616,6 +1721,14 @@ export async function whatsappHistoryLimited(instance: AppInstance): Promise<boo
  */
 const historyLimitChecked = new Map<string, number>()
 const HISTORY_LIMIT_CHECK_MS = 60_000
+const MAX_HISTORY_LIMIT_CHECKED = 1000
+
+/** The connection's Evolution settings; `null` when it has no settings row yet (Evolution's default). */
+function readEvolutionSettings(instance: AppInstance): Promise<EvolutionSettings | null> {
+  return evolutionClientForInstance(instance)<EvolutionSettings | null>(
+    `/settings/find/${encodeURIComponent(instance.name)}`,
+  )
+}
 
 /**
  * Turn `syncFullHistory` off before a limited connection pairs.
@@ -1634,27 +1747,11 @@ async function applyHistoryLimitBeforePairing(instance: AppInstance): Promise<vo
   const checked = historyLimitChecked.get(instance.id)
   if (checked && now - checked < HISTORY_LIMIT_CHECK_MS) return
 
-  if (await whatsappHistoryLimited(instance)) {
-    const evolution = evolutionClientForInstance(instance)
-    const name = encodeURIComponent(instance.name)
-    // Read-modify-write, for the reasons `enableFullHistorySync` gives.
-    const current = await evolution<EvolutionSettings | null>(`/settings/find/${name}`)
-    if (current?.syncFullHistory) {
-      await evolution(`/settings/set/${name}`, {
-        method: 'POST',
-        body: settingsBody(current, { syncFullHistory: false }),
-      })
-      historySettingCache.delete(instance.id)
-      console.info(`[instances] ${instance.id} (${instance.name}): full-history sync turned off before pairing — the organization imports recent history only`)
-    }
+  if (await historyLimited(instance) && await writeSyncFullHistory(instance, false)) {
+    console.info(`[instances] ${instance.id} (${instance.name}): full-history sync turned off before pairing — the organization imports recent history only`)
   }
 
-  // Bounded by sweeping old entries rather than by connection count: a
-  // pairing that ended long ago has nothing left to check.
-  for (const [id, at] of historyLimitChecked) {
-    if (now - at >= HISTORY_LIMIT_CHECK_MS) historyLimitChecked.delete(id)
-  }
-  historyLimitChecked.set(instance.id, now)
+  rememberBounded(historyLimitChecked, instance.id, now, MAX_HISTORY_LIMIT_CHECKED)
 }
 
 /**
@@ -1675,36 +1772,22 @@ async function applyHistoryLimitBeforePairing(instance: AppInstance): Promise<vo
  * Also true for an account paired before `syncFullHistory` was turned on, which
  * is accurate: it has only what arrived since.
  *
- * Cached five minutes per connection, successes only, cleared wherever the
- * setting is written and by `forgetInstanceStatus`.
+ * Cached five minutes per connection (`sharedCache`: one read for concurrent
+ * tool calls, successes only), cleared wherever the setting is written and by
+ * `forgetInstanceStatus`.
  */
 export async function recentHistoryOnly(instance: AppInstance): Promise<boolean | undefined> {
-  const now = Date.now()
-  const cached = historySettingCache.get(instance.id)
-  if (cached && now - cached.at < HISTORY_SETTING_TTL_MS) return cached.recentOnly
-
-  let settings: EvolutionSettings | null
   try {
-    settings = await evolutionClientForInstance(instance)<EvolutionSettings | null>(
-      `/settings/find/${encodeURIComponent(instance.name)}`,
-    )
+    // No settings row is Evolution's default, which is off.
+    return await historySettingCache.get(instance.id, async () => (await readEvolutionSettings(instance))?.syncFullHistory !== true)
   }
   catch (error) {
     console.warn(`[instances] could not read history settings for ${instance.id} (${instance.name}):`, error)
     return undefined
   }
-
-  // No settings row is Evolution's default, which is off.
-  const recentOnly = settings?.syncFullHistory !== true
-  for (const [id, entry] of historySettingCache) {
-    if (now - entry.at >= HISTORY_SETTING_TTL_MS) historySettingCache.delete(id)
-  }
-  historySettingCache.set(instance.id, { at: now, recentOnly })
-  return recentOnly
 }
 
-const historySettingCache = new Map<string, { at: number, recentOnly: boolean }>()
-const HISTORY_SETTING_TTL_MS = 5 * 60_000
+const historySettingCache = sharedCache<boolean>({ namespace: 'history-setting', ttlMs: 5 * 60_000 })
 
 /**
  * Said to a model alongside `recentHistoryOnly: true`. Shared by the read and

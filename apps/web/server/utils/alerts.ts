@@ -44,6 +44,12 @@ type ConnectionHealth = {
    */
   flapping: boolean
   /**
+   * WhatsApp only: reads `open`, but a send or group lookup found the socket
+   * dead since Evolution last opened it — see `socketStalled` in instances.ts.
+   * Same fix as `flapping`: restart the Evolution service.
+   */
+  stalled: boolean
+  /**
    * The connection has been linked at some point, so a bad state is an outage
    * rather than a connection nobody has finished setting up.
    */
@@ -70,7 +76,9 @@ type ConnectionHealth = {
  * **What "paired" means differs by kind, and both answers are deliberate.**
  *
  * WhatsApp: `ownerJid`. A fresh instance and a logout both leave Evolution in
- * `close`, and `ownerJid` is the only thing that tells them apart. It is also
+ * `close`, and `ownerJid` is the only thing that tells them apart: 2.3.7 writes
+ * it when the socket opens and never clears it — logout's `cleaningUp` sets
+ * `connectionStatus` alone. It is also
  * absent when Evolution cannot be reached, so an Evolution outage is invisible
  * here — which is today's behaviour, and nothing can say more without a stored
  * "was linked" fact.
@@ -96,6 +104,7 @@ async function readConnectionHealth(instance: AppInstance, kind: 'whatsapp' | 't
         state: status.state,
         sessionLost: Boolean(status.sessionLost),
         flapping: Boolean(status.flapping),
+        stalled: Boolean(status.stalled),
         paired: Boolean(status.ownerJid),
         knownUnlinked: false,
         revoked: false,
@@ -112,6 +121,7 @@ async function readConnectionHealth(instance: AppInstance, kind: 'whatsapp' | 't
         state: status.state,
         sessionLost: Boolean(status.sessionLost),
         flapping: false,
+        stalled: false,
         paired: linked || unreachable,
         knownUnlinked: !linked && !unreachable,
         revoked: Boolean(status.revoked),
@@ -235,12 +245,13 @@ async function evaluate(instance: AppInstance): Promise<void> {
   const health = await readConnectionHealth(instance, kind)
 
   // Before the paired check, and with no grace: the operator is the one person
-  // who can end a loop, so they hear about it as soon as it amounts to one.
-  // Its failure is logged and does not stop the organization's own alert.
-  // Kind-agnostic: only WhatsApp health can be `flapping`, and only a WhatsApp
-  // row ever carries `ops_alerted_at`.
+  // who can end a loop or unstick a session, so they hear about it as soon as
+  // it amounts to one. Its failure is logged and does not stop the
+  // organization's own alert. Kind-agnostic: only WhatsApp health can be
+  // `flapping` or `stalled`, and only a WhatsApp row ever carries
+  // `ops_alerted_at`.
   await reportLoopToOperator(instance, health).catch((error) => {
-    console.error(`[alerts] could not report connection ${instance.id}'s reconnect loop to the operator:`, error)
+    console.error(`[alerts] could not report connection ${instance.id}'s stuck session to the operator:`, error)
   })
 
   if (!health.paired) {
@@ -255,8 +266,9 @@ async function evaluate(instance: AppInstance): Promise<void> {
   }
 
   // A loop reads `open` on most live reads — whichever socket just logged in —
-  // so without the last clause it is healthy by construction.
-  const healthy = health.state === 'open' && !health.sessionLost && !health.flapping
+  // and a stuck session reads `open` on all of them, so without the last two
+  // clauses both are healthy by construction.
+  const healthy = health.state === 'open' && !health.sessionLost && !health.flapping && !health.stalled
 
   if (healthy) {
     if (!instance.down_since && !instance.alerted_at) return
@@ -382,8 +394,8 @@ function opsAlertEmail(): string {
 }
 
 /**
- * Whether the operator of this deployment is mailed about a reconnect loop on
- * this connection: an operator address is set, mail can go out, and the
+ * Whether the operator of this deployment is mailed about a stuck session — a
+ * reconnect loop or a dead socket under a live `open` — on this connection: an operator address is set, mail can go out, and the
  * connection is on the deployment's own Evolution server. A server the
  * organization supplied is theirs to restart, and its loops are not ours to
  * report.
@@ -393,8 +405,9 @@ function operatorMailedAboutLoops(instance: Pick<AppInstance, 'admin_key' | 'bas
 }
 
 /**
- * Whether what a customer reads about a reconnect loop on this connection may
- * say "this is on our side, we have been alerted". The one rule behind the
+ * Whether what a customer reads about a stuck session on this connection — a
+ * reconnect loop (`flapping`) or a dead socket under a live `open` (`stalled`) —
+ * may say "this is on our side, we have been alerted". The one rule behind the
  * outage mail, the dashboard notice and `operatorAlerted` on the status that
  * MCP returns — so the three cannot disagree.
  *
@@ -410,7 +423,9 @@ export function operatorAlertedAboutLoop(instance: Pick<AppInstance, 'admin_key'
 
 /**
  * Mail the deployment's operator when a WhatsApp connection on its Evolution
- * server starts looping, and again when the loop has ended.
+ * server starts looping or is found stuck (`stalled`), and again when that has
+ * ended. One episode either way: a session that goes from one to the other
+ * keeps its claim, so the operator is not mailed twice for one restart.
  *
  * The only operator signal before this was the `storeRowChurn` log line, which
  * nobody watches; in practice a loop was heard about when a customer replied to
@@ -432,7 +447,7 @@ export function operatorAlertedAboutLoop(instance: Pick<AppInstance, 'admin_key'
 async function reportLoopToOperator(instance: AppInstance, health: ConnectionHealth): Promise<void> {
   const to = opsAlertEmail()
 
-  if (health.flapping) {
+  if (health.flapping || health.stalled) {
     if (instance.ops_alerted_at || !operatorMailedAboutLoops(instance)) return
 
     const sql = await appDb()
@@ -443,7 +458,8 @@ async function reportLoopToOperator(instance: AppInstance, health: ConnectionHea
     `
     if (!claimed.length) return
 
-    const sent = await sendAppEmail({ to, ...operatorLoopMail(instance) })
+    const mail = health.flapping ? operatorLoopMail(instance) : operatorStalledMail(instance)
+    const sent = await sendAppEmail({ to, ...mail })
     if (!sent) {
       await sql`UPDATE app.instances SET ops_alerted_at = NULL WHERE id = ${instance.id}`
     }
@@ -492,13 +508,44 @@ function operatorLoopMail(instance: AppInstance): AlertMail {
   }
 }
 
+/**
+ * A dead socket under a live `open` (#205): every call that needs the socket
+ * fails with `Connection Closed` while `connectionState` and the column both say
+ * `open`. Most likely the account's `eventProcessingQueue` is stuck — seen after
+ * a Postgres restart failed Evolution's writes mid-event.
+ */
+function operatorStalledMail(instance: AppInstance): AlertMail {
+  return {
+    subject: `WhatsApp connection ${instance.id} is stuck: socket dead, state open`,
+    text: [
+      `WhatsApp connection ${instance.id} `
+      + `(Evolution instance "${instance.name}", organization ${instance.org || 'unknown'}) `
+      + 'reads open — live and stored — but its sends or group lookups fail with "Connection Closed", '
+      + 'and Evolution has not reopened its socket since. Its session in Evolution is stuck: '
+      + 'nothing is sent or received.',
+      '',
+      `Last failed socket call: ${instance.socket_dead_seen_at ?? 'just now'}`,
+      '',
+      'Fix: restart the Evolution service. No QR scan is needed; every account on it drops briefly and reconnects. '
+      + 'Reconnect in the app cannot help (the state reads open), and /instance/restart must not be used. '
+      + 'If Postgres was restarted recently, that is the likely cause.',
+      ...(hostedMode()
+        ? ['', 'The people using this connection are told it is on our side and that nothing is needed from them.']
+        : []),
+      '',
+      'See docs/whatsapp.md, "Stuck with the socket dead". You will get one more email when it is working again.',
+    ].join('\n'),
+  }
+}
+
+/** Neutral about which it was: by the time it ends, the row no longer says. */
 function operatorLoopEndedMail(instance: AppInstance): AlertMail {
   return {
-    subject: `WhatsApp connection ${instance.id} is no longer reconnecting`,
+    subject: `WhatsApp connection ${instance.id} is no longer stuck`,
     text: [
-      `WhatsApp connection ${instance.id} (Evolution instance "${instance.name}") is no longer seen reconnecting over and over. `
-      + 'If Evolution has been unreachable since, this can also mean its row cannot be read; the connection\'s own '
-      + 'outage mail covers that.',
+      `WhatsApp connection ${instance.id} (Evolution instance "${instance.name}") is no longer seen reconnecting over and over, `
+      + 'nor with a dead socket under an open state. If Evolution has been unreachable since, this can also mean its row '
+      + 'cannot be read; the connection\'s own outage mail covers that.',
     ].join('\n'),
   }
 }
@@ -556,6 +603,23 @@ function outageMail(instance: AppInstance, health: ConnectionHealth, canManage: 
     }
   }
 
+  // Not "disconnected" either: every read says connected, and the dashboard
+  // would contradict it. What is true is that nothing goes through.
+  if (health.stalled) {
+    return {
+      subject: `${label} is not sending or receiving`,
+      text: [
+        `${label} reads as connected, but its connection to WhatsApp has stopped working, so anything `
+        + 'connected to it — including MCP tools — cannot send, and new messages are not arriving.',
+        '',
+        whatsappStalledCause(instance, canManage),
+        ...(url ? ['', url] : []),
+        '',
+        'You will get one more email when it is working again.',
+      ].join('\n'),
+    }
+  }
+
   const cause = health.kind === 'telegram' ? telegramOutageCause(health, canManage) : whatsappOutageCause(health, canManage)
 
   return {
@@ -587,17 +651,32 @@ function outageMail(instance: AppInstance, health: ConnectionHealth, canManage: 
  * and the mail says so: nothing for the reader to do, admin or member.
  */
 function whatsappLoopCause(instance: AppInstance, canManage: boolean): string {
+  return evolutionStuckCause(instance, canManage,
+    'Evolution keeps opening a new connection for this account and WhatsApp keeps replacing it.',
+    ' Repeated logins can get a number flagged by WhatsApp, so this is worth doing soon.')
+}
+
+/**
+ * A stuck session has the same fixer as a loop — whoever runs the Evolution
+ * service — and the same hosted promise when `operatorAlertedAboutLoop` holds.
+ * Never "press Reconnect": it answers 409 from `open`.
+ */
+function whatsappStalledCause(instance: AppInstance, canManage: boolean): string {
+  return evolutionStuckCause(instance, canManage, 'Evolution\'s session for this account is stuck.')
+}
+
+/** The wording a loop and a stuck session share: who restarts Evolution, and the hosted promise. */
+function evolutionStuckCause(instance: AppInstance, canManage: boolean, diagnosis: string, adminExtra = ''): string {
   if (operatorAlertedAboutLoop(instance)) {
-    return 'Evolution keeps opening a new connection for this account and WhatsApp keeps replacing it. '
-      + 'This is on our side: we have been alerted and will restart the service. No QR scan is needed, '
-      + 'the phone stays linked, and there is nothing you need to do.'
+    return `${diagnosis} This is on our side: we have been alerted and will restart the service. `
+      + 'No QR scan is needed, the phone stays linked, and there is nothing you need to do.'
   }
   const service = onDeploymentServer(instance)
     ? 'whoever runs this deployment has to restart its Evolution service'
     : 'the Evolution server this connection uses has to be restarted'
   return canManage
-    ? `Evolution keeps opening a new connection for this account and WhatsApp keeps replacing it. Reconnect cannot end this — ${service}. No QR scan is needed, and the phone stays linked. Repeated logins can get a number flagged by WhatsApp, so this is worth doing soon.`
-    : `Evolution keeps opening a new connection for this account and WhatsApp keeps replacing it. Nothing needs scanning; ${service}, and an admin of your organization has been told as well.`
+    ? `${diagnosis} Reconnect cannot end this — ${service}. No QR scan is needed, and the phone stays linked.${adminExtra}`
+    : `${diagnosis} Nothing needs scanning; ${service}, and an admin of your organization has been told as well.`
 }
 
 function whatsappOutageCause(health: ConnectionHealth, canManage: boolean): string {

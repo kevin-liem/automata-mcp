@@ -75,8 +75,9 @@ services:
       NUXT_TELEGRAM_DATABASE_URL: *database-url
       NUXT_TELEGRAM_WEBHOOK_URL: http://web:3000/api/webhook/telegram
 
-      # Mail. Optional — with NUXT_SMTP_HOST empty, alerts and invitation
-      # emails are not delivered.
+      # Mail. Optional — with NUXT_SMTP_HOST empty, no mail is delivered
+      # (alerts, invitations), email verification stays off and passwords
+      # cannot be reset from the app.
       NUXT_SMTP_HOST: ${SMTP_HOST:-}
       NUXT_SMTP_PORT: ${SMTP_PORT:-587}
       NUXT_SMTP_USERNAME: ${SMTP_USERNAME:-}
@@ -84,6 +85,8 @@ services:
       NUXT_SMTP_TLS: ${SMTP_TLS:-false}
       NUXT_MAIL_FROM: ${MAIL_FROM:-}
       NUXT_MAIL_FROM_NAME: ${MAIL_FROM_NAME:-DOPE}
+      # Where reconnect loops on this deployment's Evolution are reported.
+      NUXT_OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
 
   redis:
     image: redis:8.2.9-alpine
@@ -152,12 +155,12 @@ services:
         condition: service_healthy
     environment:
       TELEGRAM_BRIDGE_PORT: 8095
-      # Interpolation is not profile-aware, so these two are not `:?` here; the
-      # bridge itself refuses to start without them.
       # From my.telegram.org. Both or neither — without them the bridge runs
       # and the app says what to set.
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      # Interpolation is not profile-aware, so the admin key and the encryption
+      # key are not `:?` here; the bridge itself refuses to start without them.
       TELEGRAM_BRIDGE_ADMIN_KEY: ${TELEGRAM_BRIDGE_ADMIN_KEY:-}
       # Losing this unlinks every Telegram account. Keep a copy elsewhere.
       TELEGRAM_SESSION_ENCRYPTION_KEY: ${TELEGRAM_SESSION_ENCRYPTION_KEY:-}

@@ -46,6 +46,10 @@ const createBody = z.object({
   name: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, 'letters, digits, _ and - only'),
 })
 
+// Optional so a caller that sends no body (an older app) pairs with the
+// deployment's own backfill setting.
+const pairBody = z.object({ backfillDays: z.number().int().min(0).max(36_500).nullable().default(null) })
+
 const passwordBody = z.object({ password: z.string().min(1).max(256) })
 
 const webhookBody = z.object({
@@ -72,7 +76,12 @@ export function createBridgeServer(manager: SessionManager, config: BridgeConfig
       label: 'GET /health', method: 'GET', pattern: /^\/health$/, access: 'public',
       // Stays 200 without Telegram so a platform health check passes; `telegram`
       // is what the app reads to tell an admin what to set. No value is exposed.
-      handle: async () => ({ status: 200, body: { ok: true, telegram: config.telegram ? 'configured' : 'unconfigured' } }),
+      // `sync` is the live queues' backlog, as totals: an alarm on it catches a
+      // session falling behind before the heap does (#188).
+      handle: async () => ({
+        status: 200,
+        body: { ok: true, telegram: config.telegram ? 'configured' : 'unconfigured', sync: manager.load() },
+      }),
     },
     {
       label: 'POST /sessions', method: 'POST', pattern: /^\/sessions$/, access: 'admin', needsTelegram: true,
@@ -87,11 +96,15 @@ export function createBridgeServer(manager: SessionManager, config: BridgeConfig
     },
     {
       label: 'GET /sessions/:id/state', method: 'GET', pattern: /^\/sessions\/([^/]+)\/state$/, access: 'session',
-      handle: async ({ id }) => ({ status: 200, body: await manager.state(id) }),
+      // Counts are cached per session for 30 s; `?fresh=counts` reads them now.
+      handle: async ({ id, query }) => ({
+        status: 200,
+        body: await manager.state(id, { freshCounts: query.get('fresh') === 'counts' }),
+      }),
     },
     {
       label: 'POST /sessions/:id/pair', method: 'POST', pattern: /^\/sessions\/([^/]+)\/pair$/, access: 'session', needsTelegram: true,
-      handle: async ({ id }) => ({ status: 202, body: await manager.pair(id) }),
+      handle: async ({ id, body }) => ({ status: 202, body: await manager.pair(id, parse(pairBody, body).backfillDays) }),
     },
     {
       label: 'GET /sessions/:id/qr', method: 'GET', pattern: /^\/sessions\/([^/]+)\/qr$/, access: 'session',

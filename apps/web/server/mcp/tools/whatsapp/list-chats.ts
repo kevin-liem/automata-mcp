@@ -4,18 +4,18 @@
  * conversations and simply does not learn the others exist.
  *
  * **This answers with one page, and says so.** `listChats` returns a `ChatPage`
- * whose `hasMore` means "the page came back full", and dropping it here left the
+ * whose `hasMore` means "more conversations exist past this page", and dropping it here left the
  * only read tool that presents a page as a complete listing — the exact gap
  * `read-messages` and `list-tables` both carry an envelope to close. A model
  * told nothing concludes these are all the conversations there are.
  *
- * No page-size or offset argument, though, and that is not an omission: every
- * page is one aggregate over the account's whole message table (see
- * `listChatActivity`), so walking a small `skip` costs that scan per page. One
- * large page is cheaper. The page size stays this server's decision.
+ * No page-size or offset argument, though, and that is not an omission: the
+ * page size stays this server's decision, and one large page is what a model
+ * needs to find a chat.
  *
- * Read live, not cached: a message that has reached the dashboard is in this
- * listing on the next call.
+ * Fresh within a minute, not live: the account's whole listing is read once
+ * and shared by every page and caller for `CHAT_ACTIVITY_TTL_MS` (`chats.ts`,
+ * #174), so a chat whose message arrived seconds ago can still sit lower down.
  *
  * `phoneNumber` on a LID chat discloses nothing a token could not already reach:
  * its evidence is the LID chat's own rows, and `filterChatsToScope` keeps it only
@@ -65,9 +65,7 @@ export default defineKindTool({
     return {
       // `count` is what survived scope; `hasMore` is about the page underneath
       // it, so a scoped token can legitimately see few chats and still be told
-      // there are more. Wrong only in the safe direction, as everywhere else: a
-      // page that came back exactly full reports true and costs nothing but a
-      // sentence.
+      // there are more.
       count: visible.length,
       hasMore,
       ...(hasMore && {

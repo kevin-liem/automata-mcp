@@ -79,6 +79,8 @@ export default defineKindTool({
       // drops — see relayEvolutionSendError.
       relayEvolutionSendError(error, number, instance.id)
     }
+    // The socket answered: any dead-socket evidence is out of date (#205).
+    noteSocketAlive(instance)
     return sendDisclaimer ? { ...result, disclaimerAppended: sendDisclaimer } : result
   },
 })

@@ -114,7 +114,12 @@ export type BridgeSessionState = {
   me?: { id: string, username?: string, name?: string, phone?: string }
   lastError?: string
   stats: { chats: number, messages: number }
-  sync: { backfilling: boolean, pausedUntil?: string, dialogsSyncedAt?: string, pendingBackfill: number }
+  /**
+   * `backfillDays` is how far back the session's backfill reaches. Absent from a
+   * bridge older than per-session caps, which is how `startTelegramPairing`
+   * tells that a cap it needs would be ignored.
+   */
+  sync: { backfilling: boolean, pausedUntil?: string, dialogsSyncedAt?: string, pendingBackfill: number, backfillDays?: number }
 }
 
 export type BridgeQr = {
@@ -166,7 +171,9 @@ export function createTelegramBridge(creds: TelegramCredentials) {
 
   return {
     state: () => client<BridgeSessionState>(`${session}/state`),
-    pair: () => client<BridgeSessionState>(`${session}/pair`, { method: 'POST' }),
+    // `backfillDays` caps how far back this session's history is fetched; null
+    // leaves the bridge's own setting. Stored by the bridge at every call.
+    pair: (backfillDays: number | null) => client<BridgeSessionState>(`${session}/pair`, { method: 'POST', body: { backfillDays } }),
     qr: () => client<BridgeQr>(`${session}/qr`),
     // The password is in the body of this one request and nowhere else: not
     // logged here, and the bridge never stores it.
@@ -266,9 +273,12 @@ export async function deploymentBridgeReadiness(): Promise<BridgeReadiness> {
  * -100… instead", Telegram's own refusal code — so those pass through with their
  * status. Anything else, including a 401 that means this row's session key is
  * wrong, is this deployment's problem: logged, because a handled error is
- * invisible to Nitro, and answered as 503.
+ * invisible to Nitro, and answered as 503. Our own refusals thrown inside the
+ * same `try` (a half-provisioned row, an app-database outage) are already shaped
+ * for the browser and pass through unchanged.
  */
 export function relayBridgeError(error: unknown, action: string): never {
+  if (isError(error)) throw error
   const status = httpStatusOf(error)
   if (isTelegramNotConfigured(error)) {
     console.error(`[telegram] could not ${action}: the bridge has no TELEGRAM_API_ID / TELEGRAM_API_HASH`)
@@ -301,7 +311,8 @@ export type TelegramStatus = {
   number?: string
   error?: string
   stats: { messages: number, chats: number }
-  sync?: { backfilling: boolean, pendingBackfill: number, dialogsSyncedAt?: string, pausedUntil?: string }
+  /** `historyDays`: how far back this account's history is fetched, in days. Absent from an older bridge. */
+  sync?: { backfilling: boolean, pendingBackfill: number, dialogsSyncedAt?: string, pausedUntil?: string, historyDays?: number }
 }
 
 /**
@@ -344,6 +355,7 @@ export async function getTelegramStatus(instance: AppInstance): Promise<Telegram
       pendingBackfill: bridge.sync.pendingBackfill,
       ...(bridge.sync.dialogsSyncedAt && { dialogsSyncedAt: bridge.sync.dialogsSyncedAt }),
       ...(bridge.sync.pausedUntil && { pausedUntil: bridge.sync.pausedUntil }),
+      ...(typeof bridge.sync.backfillDays === 'number' && { historyDays: bridge.sync.backfillDays }),
     },
   }
 }

@@ -19,7 +19,9 @@ const props = withDefaults(defineProps<{
   lost?: boolean
   /** A WhatsApp reconnect loop; see `ConnectionBadge`. */
   flapping?: boolean
-}>(), { canManage: false, lost: false, flapping: false })
+  /** A WhatsApp socket dead under a live `open`; see `ConnectionBadge`. */
+  stalled?: boolean
+}>(), { canManage: false, lost: false, flapping: false, stalled: false })
 
 defineEmits<{ renamed: [] }>()
 </script>
@@ -41,7 +43,7 @@ defineEmits<{ renamed: [] }>()
         />
         <slot />
       </div>
-      <ConnectionBadge :state="props.state" :kind="props.kind" :lost="props.lost" :flapping="props.flapping" />
+      <ConnectionBadge :state="props.state" :kind="props.kind" :lost="props.lost" :flapping="props.flapping" :stalled="props.stalled" />
     </div>
   </div>
 </template>

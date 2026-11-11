@@ -26,7 +26,9 @@ interface StatusResponse {
   sessionLost?: boolean
   /** Evolution keeps reopening the socket; reads `open` most of the time. */
   flapping?: boolean
-  /** With `flapping`: the deployment's operator is alerted and will restart Evolution. */
+  /** Reads `open`, but a send or group lookup found the socket dead since it last opened. */
+  stalled?: boolean
+  /** With `flapping` or `stalled`: the deployment's operator is alerted and will restart Evolution. */
   operatorAlerted?: boolean
   profileName?: string
   profilePicUrl?: string
@@ -46,9 +48,6 @@ interface QrResponse {
 }
 
 const id = computed(() => props.id)
-
-/** Only with the hosted offering is there a Billing page to point at. */
-const { billing } = usePlan()
 
 /**
  * Set while the history import runs. The server caches counts for a few minutes,
@@ -121,11 +120,15 @@ const mode = computed<Mode>(() => {
 })
 
 const flapping = computed(() => data.value?.flapping === true)
-const operatorAlerted = computed(() => flapping.value && data.value?.operatorAlerted === true)
+// Not `stalled`: that name is taken below by a Reconnect that did not land.
+// The server never sends `stalled` alongside `flapping`.
+const socketStuck = computed(() => data.value?.stalled === true)
+const operatorAlerted = computed(() => (flapping.value || socketStuck.value) && data.value?.operatorAlerted === true)
 
 const display = computed(() => describeState(state.value, 'whatsapp', {
   lost: mode.value === 'lost',
   flapping: flapping.value,
+  stalled: socketStuck.value,
   operatorAlerted: operatorAlerted.value,
 }))
 
@@ -397,6 +400,7 @@ const importHistory = () => backToPairing(
       kind="whatsapp"
       :lost="mode === 'lost'"
       :flapping="flapping"
+      :stalled="socketStuck"
       @renamed="refresh()"
     >
       <!--
@@ -527,6 +531,35 @@ const importHistory = () => backToPairing(
         </template>
       </NoticeCard>
 
+      <!--
+        A dead socket under an `open` that never wavers (#205): a send or a
+        group lookup failed with Connection Closed, and Evolution has not
+        reopened the socket since. Its session is stuck; Reconnect answers 409
+        from `open`, so again nobody gets a button.
+      -->
+      <NoticeCard v-else-if="socketStuck" title="This account has stopped sending and receiving" tone="error">
+        <template #description>
+          <p class="mt-1 text-sm text-muted-foreground">
+            It reads as connected, but its last attempts to reach WhatsApp failed:
+            Evolution's session for it is stuck, so sends fail and new messages
+            are not arriving.
+            <template v-if="operatorAlerted">
+              This is on our side: we have been alerted and will restart the
+              service. Nothing needs scanning, the phone stays linked, and there
+              is nothing you need to do.
+            </template>
+            <template v-else-if="canManage">
+              Reconnect cannot end this. Restarting {{ evolutionServer }} does, with
+              no new QR scan.
+            </template>
+            <template v-else>
+              Nothing needs scanning. Whoever runs {{ evolutionServer }} has to
+              restart it — an admin of your organization can see to that.
+            </template>
+          </p>
+        </template>
+      </NoticeCard>
+
       <SessionLostNotice
         v-else-if="mode === 'lost'"
         service="WhatsApp"
@@ -573,12 +606,9 @@ const importHistory = () => backToPairing(
         Your plan imports recent history only: when a device is linked, WhatsApp
         hands over the recent part of your conversations, and everything since is
         kept. Older messages are not imported.
-        <template v-if="canManage && billing">
-          <NuxtLink to="/billing" class="underline underline-offset-2">
-            Upgrade
-          </NuxtLink>
+        <UpgradeLink v-if="canManage">
           to import an account's full history.
-        </template>
+        </UpgradeLink>
       </p>
       <p v-else class="text-xs text-muted-foreground">
         WhatsApp hands over its history only at the moment a device is linked, so

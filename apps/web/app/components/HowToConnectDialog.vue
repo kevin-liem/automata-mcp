@@ -75,8 +75,8 @@ const cliCommand = computed(() => `claude mcp add --transport http ${serverName.
 
         <TabsContent value="web" class="min-w-0">
           <ol class="list-decimal space-y-3 pl-5 text-sm marker:text-muted-foreground">
-            <li>Open Claude on the web or in the desktop app, then go to <strong class="font-semibold">Settings → Connectors</strong>.</li>
-            <li>Click <strong class="font-semibold">Add custom connector</strong>.</li>
+            <li>Open Claude on the web or in the desktop app, then go to <strong class="font-semibold">Settings → Customize → Connectors</strong>.</li>
+            <li>Click <strong class="font-semibold">Add → Add custom connector</strong>.</li>
             <li>
               <p class="mb-2">Give it a name and paste this URL:</p>
               <CopyableSnippet :value="url" :copyable="known" aria-label="Copy connector URL" />

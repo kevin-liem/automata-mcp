@@ -7,6 +7,8 @@ import { z } from 'zod'
 export default defineKindTool({
   name: 'search-telegram-messages',
   kind: 'telegram',
+  // A scan over the account's messages: the per-connection budget in mcp-rate-limit.ts.
+  expensive: true,
   title: 'Search Telegram messages',
   description:
     'Find synced Telegram messages containing given words, newest first, across every '

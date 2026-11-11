@@ -142,6 +142,21 @@ export default defineNuxtConfig({
     imapBackfillMax: '50000',
     imapAttachmentMaxBytes: String(10 * 1024 * 1024),
 
+    // Per-minute budgets on /mcp, so one runaway agent loop cannot slow the
+    // shared backends for everyone: every request per token and per
+    // organization, and calls to costly tools (searches, run-query) per
+    // connection. 0 turns one off. Over budget = 429 with Retry-After. See
+    // server/utils/mcp-rate-limit.ts and docs/self-hosting.md.
+    mcpRateTokenPerMinute: '120',
+    mcpRateOrgPerMinute: '600',
+    mcpRateExpensivePerMinute: '30',
+    // Optional Redis for state that should hold across replicas — those
+    // budgets, and the one-minute chat listing cache (shared-cache.ts). Set on
+    // the hosted offering; unset, both are kept in-process. Unreachable =
+    // in-process too, never an error. Use a database number of its own
+    // (Evolution's cache uses /6). See server/utils/redis.ts.
+    redisUrl: '',
+
     // Let a user-supplied Postgres DSN or Evolution URL point at a private or
     // loopback address. Correct for a single-tenant, self-hosted deployment;
     // wrong for anything shared, where it lets one user's connection reach this

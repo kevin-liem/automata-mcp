@@ -24,8 +24,9 @@ Self-hosted deployments never run the cloud service.
 | Connections | 1 | unlimited |
 | Connector tokens | 1 | unlimited |
 | Users | 1 | 5 included, $10/user/month after |
-| Requests | unlimited | unlimited |
+| Requests | unlimited, subject to [rate limits](#rate-limits) | the same |
 | WhatsApp history at pairing | recent only | recent, or full if chosen |
+| Telegram history at linking | last 90 days | the deployment's setting (365 days by default) |
 
 **WhatsApp history.** Every new WhatsApp connection imports the recent history
 by default: what WhatsApp hands any linked browser, rather than everything the
@@ -37,6 +38,46 @@ the deployment's own Evolution server, never to a bring-your-own one, and it
 deletes nothing: history already imported stays when an organization moves to
 Free, and moving to Pro imports nothing by itself. An admin who upgrades presses
 **Import full history** on the connection's dashboard, which costs a QR scan. See [WhatsApp history](whatsapp.md#recent-history-only).
+
+**Telegram history.** Telegram has no "recent slice" to ask for: the bridge
+fetches older history itself after an account is linked, back to
+`TELEGRAM_BACKFILL_DAYS` (365 by default). On Free it fetches the last 90 days
+instead — the same `recent_history_only` flag, read by `historyLimited`
+in `apps/web/server/utils/instances.ts`, with the number in
+`apps/web/shared/history.ts`. The app sends the cap when pairing starts and the
+bridge stores it on the session, so it is decided at linking, like WhatsApp's:
+an account linked under Pro keeps its longer history after a move to Free, and
+an account linked under Free fetches further back only once it is unlinked and
+linked again. New messages are kept either way, and a bring-your-own bridge is
+never capped. A bridge too old to store the cap makes linking on Free answer
+503, with the reason in the web log, rather than pair uncapped. See
+[What syncs](telegram.md#what-syncs).
+
+### Rate limits
+
+No plan has a monthly request quota, but no plan is unmetered either. Every
+`/mcp` request counts against per-minute budgets that are the same on Free and
+Pro, so one runaway agent loop cannot slow the shared databases and mail
+servers for every other customer:
+
+| Budget | Default |
+|---|---|
+| Per connector token, every request | 120 a minute |
+| Per organization, all its tokens together | 600 a minute |
+| Per connection, costly tools only (`search-messages`, `search-telegram-messages`, `search-emails` with `text`, `run-query` without `explain`) | 30 a minute |
+
+Each budget can be spent all at once and refills continuously. A request over
+any of them gets **429** with `Retry-After` and a JSON-RPC error naming which
+budget ran out. It never gets 401, so the client keeps the token. The budgets are
+deployment settings (`NUXT_MCP_RATE_*`; see
+[self-hosting.md](self-hosting.md#mcp-rate-limits)). They are not plan rules:
+`plans.ts` writes no number for them. The copy on both plans says "Unlimited
+requests*", with the fine print "\* Subject to generous rate limits. Rate limits
+are to protect our servers from abuse." under the plan cards in `signup.vue` and
+under the Pro list in `billing.vue`. Keep the asterisk and the fine print
+together. If the budgets ever differ by plan,
+they become `max_*`-style columns written by the cloud service, like the
+others.
 
 The numbers are set in three places:
 
@@ -82,6 +123,10 @@ Free allows:
 - Every other token answers **403**, never 401, so the MCP client keeps it.
   Resubscribing brings every token back with nothing to reconfigure.
 - Everyone in the organization sees a banner about it.
+- WhatsApp connections on this deployment's Evolution server can no longer
+  import full history, and one created under Pro gets recent history only the
+  next time it pairs. Telegram accounts linked from then on fetch 90 days of
+  history. History already imported stays.
 
 `past_due` counts as Pro while Stripe is still retrying the charge. Your
 retry settings in Stripe decide how long that lasts.
@@ -91,7 +136,7 @@ retry settings in Stripe decide how long that lasts.
 The plan and its limits are kept apart:
 - **Plan:** Stripe status, decided by the billing code.
 - **Limits:** three plain numbers on each organization, `max_connections`, `max_tokens` and `max_members`. NULL means unlimited.
-- **Recent WhatsApp history only:** one more flag, `recent_history_only`. While it is true, the organization's WhatsApp connections on this deployment's Evolution server can't import full history (see above). It's true on Free and false on Pro.
+- **Recent history only:** one more flag, `recent_history_only`. While it is true, the organization's WhatsApp connections on this deployment's Evolution server can't import full history, and its Telegram accounts linked on this deployment's bridge fetch only 90 days of history (see above). It's true on Free and false on Pro.
 
 The cloud service writes those values whenever a subscription changes, and for every organization each time it starts. The web app's checks only ever read them, so they keep working, from the database, even while the cloud service is down.
 
@@ -164,7 +209,7 @@ That is the whole list. Nothing about connections, tokens or usage is sent. The 
    `BREVO_API_KEY` turns the sync on. Without it there is no sync, and any list ids set are ignored (the startup log names them), so a Railway PR environment that lost the sealed key still starts. With the key set, both list ids are required and must differ. A missing, non-numeric or repeated list id stops the service from starting.
 4. Redeploy. `GET /health` reports `crm`:
    - `unconfigured`: `BREVO_API_KEY` is not set.
-   - `waiting`: the start-up checks have not passed yet. The log says why: the web app's migration `0009_marketing_consent` is missing, a list doesn't exist, the key is wrong, or an attribute exists with the wrong type. The service checks again every 15 seconds while the migration is missing, and every five minutes otherwise; billing is unaffected.
+   - `waiting`: the start-up checks have not passed yet. Until the web app's migration `0022_recent_history_only` has run the sync does not start at all (`app` reads `waiting` too). After that the log says why: a list doesn't exist, the key is wrong, or an attribute exists with the wrong type. The service checks again every five minutes; billing is unaffected.
    - `ready`: the sync is running.
 
    The first time the sync runs, it starts from the **oldest** retained event, so every signup since the event log existed becomes a contact.
@@ -272,7 +317,7 @@ STRIPE_PRICE_SEAT=price_…
 
 This is what lets a Railway PR environment start. Railway never copies sealed variables into a PR environment, so the two secrets go missing while the price ids arrive. The preview then runs without billing. To test Checkout in previews, give the PR environment's base environment unsealed **test-mode** values. Never use live keys there.
 
-`GET /health` answers `{ ok, app, billing, crm }`. `app` is `waiting` until the web app has run its migrations; the cloud service waits for them rather than failing.
+`GET /health` answers `{ ok, app, billing, crm }`. `app` is `waiting` until the web app has run its migrations; the cloud service waits for them rather than failing. `billing` is `configured` when `STRIPE_SECRET_KEY` is set, else `unconfigured`. The service listens on `CLOUD_PORT`, else `PORT`, else 8096, and refuses to start with a `CLOUD_ADMIN_KEY` shorter than 24 characters.
 
 **Database access.** The service connects to the web app's database. It reads `app` tables, writes only organizations' billing and limit columns, `app.hosted_events` and `app.entitlement_defaults`, and keeps its own state in a `cloud` schema it creates. The simplest setup reuses the web app's database URL. To narrow it, give it a role with:
 - `USAGE` on the `app` schema;
@@ -294,7 +339,16 @@ NUXT_CLOUD_ADMIN_KEY=…                              # the same value as CLOUD_
 NUXT_PUBLIC_APP_URL=https://mcp.getautomata.app
 NUXT_SIGNUP=open
 NUXT_OPS_ALERT_EMAIL=…                              # where reconnect loops on our Evolution are reported
+NUXT_REDIS_URL=redis://…/1                          # rate-limit counts shared across replicas
 ```
+
+`NUXT_REDIS_URL` keeps the [rate limits](#rate-limits) in Redis, so they hold
+across web replicas and redeploys. Without it each replica counts on its own,
+and two replicas allow twice the budget. If Redis can't be reached, the web app
+falls back to counting in-process and logs that once a minute. Requests are
+never refused because Redis is down. If it shares a Redis with Evolution, give
+it its own database number (Evolution's cache uses `/6`). Self-hosted
+deployments don't need it.
 
 `NUXT_OPS_ALERT_EMAIL` is not about billing, but hosted mode is what makes it
 matter: with it set, a customer whose WhatsApp connection is stuck reconnecting

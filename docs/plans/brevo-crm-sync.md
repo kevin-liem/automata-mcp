@@ -288,7 +288,7 @@ consumer never sees them.
   working out which users have no event, and it is harmless.
 
 Run it once, after the consumer has been deployed and `/health` reports
-`crm: configured`.
+`crm: ready`.
 
 ## Rollout
 
@@ -304,7 +304,7 @@ Run it once, after the consumer has been deployed and `/health` reports
    minutes. Most events are `usage.rollup` and are skipped without any Brevo
    call.
 6. Run `pnpm cloud:crm-backfill` once against production.
-7. Check: `/health` reports `crm: configured`, Brevo's contact count matches
+7. Check: `/health` reports `crm: ready`, Brevo's contact count matches
    `SELECT count(*) FROM app.users`, the marketing list's size matches
    `… WHERE marketing_consent_at IS NOT NULL`, and `cloud.crm_skipped` is
    empty.

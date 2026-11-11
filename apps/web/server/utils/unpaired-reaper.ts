@@ -11,9 +11,10 @@ import type { AppInstance } from './app-db'
  *
  * Rules, each easy to undo:
  *
- * - **Never on `ownerJid` alone.** Fresh and logged-out look the same from
- *   Evolution's side, and deleting a connection that was paired throws away
- *   its tokens and access to its history. Candidates are rows with no
+ * - **Never on `ownerJid` alone.** Evolution 2.3.7 keeps `ownerJid` through a
+ *   logout, but it is still Evolution's fact, absent whenever Evolution can't be
+ *   read, and deleting a connection that was paired throws away its tokens and
+ *   access to its history. Candidates are rows with no
  *   `paired_at` — our own record, see `notePaired` — and each is re-asked live
  *   (`pairingEvidence`) just before deletion, so a scan at minute 59 wins. A
  *   read that fails is never a reason to delete.

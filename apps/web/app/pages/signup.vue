@@ -45,7 +45,7 @@ const plans: { id: PlanChoice, name: string, price: string, note: string, featur
     name: 'Free',
     price: '$0',
     note: 'For trying it out on your own.',
-    features: ['1 connection', '1 connector token', 'Just you', 'Recent WhatsApp history', 'Unlimited requests'],
+    features: ['1 connection', '1 connector token', 'Just you', 'Recent WhatsApp history', 'Unlimited requests*'],
   },
   {
     id: 'pro',
@@ -57,7 +57,7 @@ const plans: { id: PlanChoice, name: string, price: string, note: string, featur
       'Unlimited connector tokens',
       '5 users included, $10/user/month after',
       'Full WhatsApp history',
-      'Unlimited requests',
+      'Unlimited requests*',
     ],
   },
 ]
@@ -135,6 +135,9 @@ async function submit() {
         </Button>
       </div>
     </div>
+    <p class="mt-3 text-xs text-muted-foreground">
+      * Subject to generous rate limits. Rate limits are to protect our servers from abuse.
+    </p>
 
     <div class="mt-4 rounded-lg border border-dashed p-6 text-sm">
       <div class="flex items-baseline justify-between gap-2">

@@ -2,7 +2,8 @@ import type { Sql } from 'postgres'
 import postgres from 'postgres'
 import type { AppInstance } from './app-db'
 import type { SharedPool } from './pg-pool'
-import { mentionedJidsOf } from './mentions'
+import { staleWhileFailing } from './lookup-cache'
+import { meaningfulName, mentionedJidsOf } from './mentions'
 
 /**
  * Read-only access to Evolution's own Postgres — every message this app reads.
@@ -142,7 +143,7 @@ function readFailure(tag: string, statusMessage: string, error: unknown): unknow
 
 function messagePool(instance: AppInstance, resolved: { url: string, guard: boolean }): Promise<Sql> {
   return keyedPool(
-    resolved.guard ? `evo:${instance.id}` : 'evo:default',
+    poolKeyFor(instance, resolved),
     resolved.url,
     { guard: resolved.guard, max: 3, statementTimeoutMs: STATEMENT_TIMEOUT_MS, readOnly: true, jit: false },
   )
@@ -168,6 +169,16 @@ async function evolutionStatusDbFor(instance: AppInstance): Promise<Sql> {
 }
 
 const STATUS_STATEMENT_TIMEOUT_MS = 5_000
+
+/** One pool per user-supplied URL; every connection on our own server shares one. */
+function poolKeyFor(instance: AppInstance, resolved: { guard: boolean }): string {
+  return resolved.guard ? `evo:${instance.id}` : 'evo:default'
+}
+
+/** Which message database this connection reads — the key per-database facts are cached under. */
+function messagePoolKey(instance: AppInstance): string {
+  return poolKeyFor(instance, resolveMessageDb(instance))
+}
 
 function resolveMessageDb(instance: AppInstance): { url: string, guard: boolean } {
   const resolved = messageDbUrlFor(instance)
@@ -470,7 +481,6 @@ export async function searchMessages(
   const { query } = await evolutionDbFor(instance)
   const instanceId = await resolveEvolutionInstanceId(instance)
 
-  const patterns = options.terms.map(term => `%${escapeLike(term)}%`)
   const since = toUnixSeconds(options.since, 'since')
   const until = toUnixSeconds(options.until, 'until')
 
@@ -492,11 +502,15 @@ export async function searchMessages(
     // key of the payload that is `conversation` or ends in `Message` — so a
     // reaction arriving alongside a `messageContextInfo` is stored under that
     // type instead, with `message.reactionMessage` sitting right there. The
-    // payload is the authority. It costs nothing next to the scan already
-    // happening — `@@index([instanceId])` is the only index on
-    // `Message`. None of it touches scope: `instanceId`, `jid` and `allowedJids`
-    // still bound the query, so an included reaction is only ever one from a
-    // chat this token already reaches.
+    // payload is the authority. It is checked only on rows the body match
+    // already admitted. None of it touches scope: `instanceId`, `jid` and
+    // `allowedJids` still bound the query, so an included reaction is only ever
+    // one from a chat this token already reaches.
+    //
+    // The body is matched through `bodyMatchesAll`, never `ILIKE ALL` on a
+    // lateral alias: that shape can't use the trigram index docs/whatsapp.md
+    // tells operators to build, so every search read every row of the account
+    // (#202).
     //
     // `jids` may name two JIDs — one person stored under a LID and a phone
     // number. `DISTINCT ON (key->>'id')` and everything outside the CTE are
@@ -504,7 +518,7 @@ export async function searchMessages(
     rows = await query(sql => sql<MessageRow[]>`
       WITH matched AS (
         SELECT DISTINCT ON (m.key->>'id')
-               m.key, m."pushName", m."messageType", m."messageTimestamp", t.body,
+               m.key, m."pushName", m."messageType", m."messageTimestamp", ${messageBody(sql)} AS body,
                m."contextInfo"->'mentionedJid' AS mentioned,
                -- Which message this one edits, when it is an edit. Not decoration:
                -- without it a search can return both the stale original and its
@@ -517,10 +531,9 @@ export async function searchMessages(
                ) AS "editOf",
                ${bestNamed(sql)} AS named, m.id AS "rowId"
         FROM "Message" m
-        ${messageBodyJoin(sql)}
         WHERE m."instanceId" = ${instanceId}
-          AND t.body IS NOT NULL
-          AND t.body ILIKE ALL (${patterns}::text[])
+          AND ${messageBody(sql)} IS NOT NULL
+          ${bodyMatchesAll(sql, options.terms)}
           ${options.jids === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ANY(${[...options.jids]}::text[])`}
           ${options.allowedJids ? sql`AND m.key->>'remoteJid' = ANY(${options.allowedJids}::text[])` : sql``}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
@@ -592,8 +605,9 @@ export interface MessagePageOptions {
   includeReactions?: boolean
   /**
    * Every term must appear in the message body. Already split, not yet escaped —
-   * matched against the same `messageBodyJoin` expression `searchMessages` uses,
-   * so a listing and a search agree on what the text of a message is.
+   * matched by the same `bodyMatchesAll` over the same `messageBody` expression
+   * `searchMessages` uses, so a listing and a search agree on what the text of a
+   * message is, and both can use the trigram index.
    */
   terms?: string[]
   /** Which end of the range the first page comes from. Defaults to newest first. */
@@ -660,10 +674,9 @@ export async function listMessagesPage(
   const take = options.limit + 1
   const skip = (options.page - 1) * options.limit
 
-  // Joined only when there is something to match, so an ordinary read pays
+  // Matched only when there is something to match, so an ordinary read pays
   // nothing for it. The body expression is shared with `searchMessages`.
   const terms = options.terms?.length ? options.terms : undefined
-  const patterns = terms?.map(term => `%${escapeLike(term)}%`)
 
   // The tiebreaker travels with the direction. Evolution's own ordering has
   // none, and rows sharing a timestamp then land on two pages or on neither —
@@ -681,10 +694,9 @@ export async function listMessagesPage(
                m."contextInfo"->'mentionedJid' AS mentioned,
                ${bestNamed(sql)} AS named, m.id AS "rowId"
         FROM "Message" m
-        ${patterns ? messageBodyJoin(sql) : sql``}
         WHERE m."instanceId" = ${instanceId}
           ${options.jids === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ANY(${[...options.jids]}::text[])`}
-          ${patterns === undefined ? sql`` : sql`AND t.body ILIKE ALL (${patterns}::text[])`}
+          ${terms === undefined ? sql`` : bodyMatchesAll(sql, terms)}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
           ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
@@ -734,25 +746,14 @@ export interface ChatActivityRow {
   lastRowId: string | null
 }
 
-export interface ChatActivityOptions {
-  limit: number
-  offset: number
-  /**
-   * Phone-number JID → LID, from `lidLinks()`. Each phone-number chat named
-   * here is folded into its LID's row, so the listing counts people, not
-   * storage keys. Omitted or empty: every JID is its own row, as before.
-   */
-  links?: ReadonlyMap<string, string>
-}
-
 /**
- * The account's conversations, most recent activity first.
+ * The account's conversations, most recent activity first — **all of them**, in
+ * one read. Paging is the caller's: `chats.ts` keeps this answer for a minute
+ * (`sharedCache`) and slices pages out of it, so walking the listing page by page
+ * costs one read, not one per page (#174).
  *
- * **This replaced `POST /chat/findChats`** and the 60-second cache that sat in
- * front of it. That endpoint is itself a raw `DISTINCT ON (remoteJid)` over this
- * table, so reading the table directly costs the same scan and drops the stale
- * window — a message that has already reached the dashboard is no longer missing
- * from `list-chats` for up to a minute.
+ * **This replaced `POST /chat/findChats`**, which is itself a raw
+ * `DISTINCT ON (remoteJid)` over this table.
  *
  * **No unread count, on purpose.** Evolution's `Chat.unreadMessages` reads 0
  * almost always — 2.3.7's `messages.update` handler writes 0 on *any* status
@@ -765,69 +766,71 @@ export interface ChatActivityOptions {
  * wrong is worse than none: an agent asked "anything unread?" should say it
  * cannot tell. Re-check if Evolution starts persisting `chats.update`.
  *
- * **Cost — the shape is load-bearing, measured on an 840k-message account.**
- * One scan of the account's rows (`@@index([instanceId])` is the only index).
- * Postgres has no statistics on `key->>'remoteJid'`, so it guesses one chat per
- * row (743k estimated against 675 real) and groups by *sorting*. Fed raw rows,
- * that sort carries each row's whole `key` and `message` jsonb — 586 bytes —
- * and spilled ~540 MB to disk: 91 s. The `MATERIALIZED` CTE reduces every row
- * to a few scalars and a flag *before* the grouping, and is a fence so the
- * planner cannot inline it and drag the jsonb back into the sort: ~3 s warm,
- * ~6 s cold, 2.3 s warm with JIT off (the pool sets `jit: false`). Do not fold
- * `msg` into `per_chat`.
+ * **Cost: proportional to chats, not messages — given the index (#174).** With
+ * an index on `("instanceId", key->>'remoteJid', "messageTimestamp")` —
+ * `message_instance_chat_ts_idx` in docs/whatsapp.md, `message_chat_ts_idx` on
+ * production; any name or direction — the read is a loose index scan: a recursive CTE walks the
+ * account's distinct `remoteJid`s one index descent each, then for each chat
+ * reads its newest rows backwards off the same index and keeps the first that
+ * is not a control record — usually the first. Measured on production (PG 17,
+ * `"Message"` at 7M rows): 1.9M-message account, 3,217 chats, 96 ms warm and
+ * 2.4 s cold; the full aggregate below timed out at 10 s there. The jid walk
+ * alone is ~30 ms; the cold cost is one heap visit per chat.
  *
- * The scan must not open `message` for every row: the payload is TOASTed, and
- * reading it was most of the I/O (~96k buffers on a 310k-message account).
- * `notControl` opens it only for rows whose `messageType` can carry a control
- * record — see there.
+ * **Without that index the full aggregate is kept**, not the skip-scan: the
+ * per-chat lookup would then sort every chat's rows through a random-access
+ * index walk, which is worse than one sequential pass. `chatTimestampIndexPresent`
+ * decides, by the index's shape. The aggregate's shape is load-bearing, measured
+ * on an 840k-message account: Postgres has no statistics on
+ * `key->>'remoteJid'`, guesses one chat per row and groups by *sorting*; fed raw
+ * rows that sort carried each row's whole jsonb and spilled ~540 MB (91 s). The
+ * `MATERIALIZED` CTE reduces every row to scalars first and is a fence — do not
+ * fold `msg` into `per_jid`.
  *
- * The last row comes from a plain `max()` over a sortable text key (zero-padded
- * timestamp, message id, row id), not `array_agg(... ORDER BY ...)`, which needs
- * its own sort per group. The last message's payload is *not* read here; `lastMessagePayloads` fetches it by primary key for the
- * rows actually returned.
+ * Both shapes produce one `per_jid` row per stored JID with the same answer —
+ * verified on production with `EXCEPT` both ways (zero differences) and on
+ * synthetic ties and missing ids locally. The newest row is by timestamp, then
+ * `mid || '|' || row_id` as one string — exactly the order of the fallback's
+ * padded `last_key`, under the same collation. A chat holding only control
+ * records keeps its row with no timestamp.
+ *
+ * Neither opens `message` for every row: the payload is TOASTed. `notControl`
+ * opens it only for rows whose `messageType` can carry a control record — see
+ * there. The last message's payload is *not* read here; `lastMessagePayloads`
+ * fetches it by primary key for the rows actually returned.
  *
  * `status@broadcast` is left out: it is Status updates, not a conversation, and
  * nothing can be sent to it.
  *
- * **A linked person is one row, merged here rather than after paging.** The
- * links (`lidLinks`) arrive as two bind arrays and join onto the *per-JID*
- * aggregate — a few thousand rows at most — after the fenced scan, so the shape
- * measured above is untouched. Merging after `LIMIT` would leave a person's
- * halves on two pages and `total` counting storage keys. The newest row still
- * comes from the same padded-key `max()`, now over both halves.
+ * **A linked person is one row, merged here.** The links (`lidLinks`) arrive as
+ * two bind arrays and join onto the per-JID result — a few thousand rows at
+ * most. The newest row still comes from the same padded-key `max()`, now over
+ * both halves.
  */
 export async function listChatActivity(
   instance: AppInstance,
-  options: ChatActivityOptions,
-): Promise<{ rows: ChatActivityRow[], total: number }> {
+  /**
+   * Phone-number JID → LID, from `lidLinks()`. Each phone-number chat named
+   * here is folded into its LID's row, so the listing counts people, not
+   * storage keys. Omitted or empty: every JID is its own row, as before.
+   */
+  links?: ReadonlyMap<string, string>,
+): Promise<ChatActivityRow[]> {
   // Database first, for the same reason as `listMessagesPage`.
   const { query } = await evolutionDbFor(instance)
-  const instanceId = await resolveEvolutionInstanceId(instance)
+  const [instanceId, skipScan] = await Promise.all([
+    resolveEvolutionInstanceId(instance),
+    chatTimestampIndexPresent(instance, query),
+  ])
 
-  const pns = [...(options.links?.keys() ?? [])]
-  const lids = [...(options.links?.values() ?? [])]
+  const pns = [...(links?.keys() ?? [])]
+  const lids = [...(links?.values() ?? [])]
 
-  let rows: Array<ChatActivityRow & { total: string | number }>
+  let rows: ChatActivityRow[]
   try {
     rows = await query(sql => sql`
-      WITH msg AS MATERIALIZED (
-        SELECT m.key->>'remoteJid' AS jid,
-               m."messageTimestamp" AS ts,
-               COALESCE(m.key->>'id', '') AS mid,
-               m.id AS row_id,
-               ${notControl(sql)} AS is_activity
-        FROM "Message" m
-        WHERE m."instanceId" = ${instanceId}
-          AND m.key->>'remoteJid' IS NOT NULL
-          AND m.key->>'remoteJid' <> 'status@broadcast'
-      ), per_jid AS (
-        SELECT jid,
-               max(ts) FILTER (WHERE is_activity) AS last_ts,
-               max(lpad(ts::text, 10, '0') || '|' || mid || '|' || row_id)
-                 FILTER (WHERE is_activity) AS last_key
-        FROM msg
-        GROUP BY jid
-      ), per_chat AS (
+      WITH RECURSIVE ${skipScan ? perJidBySkipScan(sql, instanceId) : perJidByAggregate(sql, instanceId)},
+      per_chat AS (
         SELECT COALESCE(l.lid, p.jid) AS jid,
                array_agg(p.jid ORDER BY p.jid) AS jids,
                max(p.last_ts) AS last_ts,
@@ -839,29 +842,157 @@ export async function listChatActivity(
       SELECT jid,
              jids,
              last_ts AS "lastTimestamp",
-             NULLIF(last_row_id, '') AS "lastRowId",
-             COUNT(*) OVER () AS total
+             NULLIF(last_row_id, '') AS "lastRowId"
       FROM per_chat
       ORDER BY last_ts DESC NULLS LAST, jid
-      LIMIT ${options.limit} OFFSET ${options.offset}
     `)
   }
   catch (error) {
     throw readFailure('[chats]', 'Listing conversations is temporarily unavailable', error)
   }
 
-  // Rides on the returned rows, like `listMessagesPage`'s count: a page past the
-  // end has no row to carry it, and the caller treats that as "nothing here".
-  const total = Number(rows[0]?.total)
-
-  return {
-    rows: rows.map(({ total: _total, ...row }) => ({
-      ...row,
-      lastTimestamp: row.lastTimestamp === null ? null : Number(row.lastTimestamp),
-    })),
-    total: Number.isFinite(total) ? total : 0,
-  }
+  return rows.map(row => ({
+    ...row,
+    lastTimestamp: row.lastTimestamp === null ? null : Number(row.lastTimestamp),
+  }))
 }
+
+/**
+ * `per_jid` from a loose index scan over the per-chat timestamp index — see
+ * `listChatActivity`. Two CTEs, `jids` (recursive) then `per_jid`.
+ *
+ * The jid walk asks the index for the smallest `remoteJid` above the last one,
+ * one descent per chat; `IS NOT NULL` on the first step and `>` on the rest keep
+ * NULL out. Postgres 17 has no skip scan of its own, hence the recursion.
+ */
+function perJidBySkipScan(sql: Sql, instanceId: string) {
+  return sql`
+    jids AS (
+      (SELECT m.key->>'remoteJid' AS jid
+       FROM "Message" m
+       WHERE m."instanceId" = ${instanceId}
+         AND m.key->>'remoteJid' IS NOT NULL
+       ORDER BY m.key->>'remoteJid'
+       LIMIT 1)
+      UNION ALL
+      SELECT (SELECT m.key->>'remoteJid'
+              FROM "Message" m
+              WHERE m."instanceId" = ${instanceId}
+                AND m.key->>'remoteJid' > j.jid
+              ORDER BY m.key->>'remoteJid'
+              LIMIT 1)
+      FROM jids j
+      WHERE j.jid IS NOT NULL
+    ), per_jid AS (
+      SELECT j.jid,
+             last.ts AS last_ts,
+             lpad(last.ts::text, 10, '0') || '|' || last.mid || '|' || last.row_id AS last_key
+      FROM jids j
+      LEFT JOIN LATERAL (
+        SELECT m."messageTimestamp" AS ts,
+               COALESCE(m.key->>'id', '') AS mid,
+               m.id AS row_id
+        FROM "Message" m
+        WHERE m."instanceId" = ${instanceId}
+          AND m.key->>'remoteJid' = j.jid
+          AND ${notControl(sql)}
+        -- Same order as the fallback's padded-key max(): the timestamp, then
+        -- the rest of that key compared as one string under its collation.
+        -- Not "mid DESC, row_id DESC": a collation that skips '|' orders a
+        -- missing id differently once it is a separate column.
+        ORDER BY m."messageTimestamp" DESC, (COALESCE(m.key->>'id', '') || '|' || m.id) DESC
+        LIMIT 1
+      ) last ON true
+      WHERE j.jid IS NOT NULL
+        AND j.jid <> 'status@broadcast'
+    )
+  `
+}
+
+/**
+ * `per_jid` from one aggregate over every row of the account — the shape used
+ * before #174, kept for a database without the per-chat timestamp index. See
+ * `listChatActivity` for why `msg` is a fenced CTE.
+ */
+function perJidByAggregate(sql: Sql, instanceId: string) {
+  return sql`
+    msg AS MATERIALIZED (
+      SELECT m.key->>'remoteJid' AS jid,
+             m."messageTimestamp" AS ts,
+             COALESCE(m.key->>'id', '') AS mid,
+             m.id AS row_id,
+             ${notControl(sql)} AS is_activity
+      FROM "Message" m
+      WHERE m."instanceId" = ${instanceId}
+        AND m.key->>'remoteJid' IS NOT NULL
+        AND m.key->>'remoteJid' <> 'status@broadcast'
+    ), per_jid AS (
+      SELECT jid,
+             max(ts) FILTER (WHERE is_activity) AS last_ts,
+             max(lpad(ts::text, 10, '0') || '|' || mid || '|' || row_id)
+               FILTER (WHERE is_activity) AS last_key
+      FROM msg
+      GROUP BY jid
+    )
+  `
+}
+
+/**
+ * Whether this message database has an index `listChatActivity` can skip-scan:
+ * a valid, non-partial btree on `("instanceId", (key->>'remoteJid'),
+ * "messageTimestamp")`, by **shape**, so an operator's own name for it counts.
+ * `DESC` on the last column matches too (the prefix is the same; a backward
+ * scan reads either).
+ *
+ * Evolution creates no such index; docs/whatsapp.md tells the operator to. So
+ * this is per database (`evo:default` or the connection's own), cached ten
+ * minutes — an index built while running is picked up without a restart — and
+ * a failed check reads as "absent" for a minute, which falls back to the shape
+ * that works everywhere rather than gambling on one that needs the index.
+ * Absence is logged once per database per process.
+ */
+async function chatTimestampIndexPresent(instance: AppInstance, query: SharedPool['query']): Promise<boolean> {
+  const key = messagePoolKey(instance)
+
+  return await chatIndexCache(key, async () => {
+    let present: boolean
+    try {
+      const [row] = await query(sql => sql<Array<{ present: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_index i
+          WHERE i.indrelid = to_regclass('"Message"')
+            AND i.indisvalid
+            AND i.indisready
+            AND i.indpred IS NULL
+            AND pg_get_indexdef(i.indexrelid) LIKE ${CHAT_TS_INDEX_SHAPE}
+        ) AS present
+      `)
+      present = row?.present === true
+    }
+    catch (error) {
+      console.warn('[chats] could not check "Message" for the chat listing index; listing by full scan for now:', error)
+      return undefined
+    }
+
+    if (!present && !chatIndexMissingReported.has(key)) {
+      chatIndexMissingReported.add(key)
+      console.warn(
+        '[chats] "Message" has no index on ("instanceId", (key->>\'remoteJid\'), "messageTimestamp"), '
+        + 'so every chat listing reads all of an account\'s messages and large accounts time out. '
+        + 'Create message_instance_chat_ts_idx: see docs/whatsapp.md "Indexes on Evolution\'s tables".',
+      )
+    }
+    if (present) chatIndexMissingReported.delete(key)
+    return present
+  })
+}
+
+/** What `pg_get_indexdef` prints for that index, up to the last column. No `_` or `%` inside. */
+const CHAT_TS_INDEX_SHAPE = '%USING btree ("instanceId", ((key ->> \'remoteJid\'::text)), "messageTimestamp"%'
+
+const chatIndexCache = staleWhileFailing<boolean>({ ttlMs: 10 * 60_000, retryTtlMs: 60_000, empty: false })
+const chatIndexMissingReported = new Set<string>()
 
 /**
  * One `(remoteJid, remoteJidAlt)` combination seen on a LID chat's rows.
@@ -932,11 +1063,8 @@ export async function readGroupChatNames(instance: AppInstance): Promise<Map<str
       AND "remoteJid" LIKE '%@g.us'
   `)
 
-  return new Map(rows.map((row) => {
-    const name = row.name?.trim()
-    // A group named after its own id is no name at all.
-    return [row.remoteJid, name && name !== row.remoteJid.split('@')[0] ? name : undefined]
-  }))
+  // A group named after its own id is no name at all.
+  return new Map(rows.map(row => [row.remoteJid, meaningfulName(row.name, row.remoteJid.split('@')[0]!)]))
 }
 
 /**
@@ -1048,19 +1176,27 @@ function notControl(sql: Sql) {
 }
 
 /**
- * The readable text of a message, as a `CROSS JOIN LATERAL ... AS t` yielding
- * `t.body` — null for a row that carries nothing renderable.
+ * The readable text of a message, as an expression over `m` — null for a row
+ * that carries nothing renderable.
  *
  * One authority for what counts as a body, shared by `searchMessages` (which
- * matches on it) and `listMessagesPage` (which joins it only when there are
- * terms to match). Two copies of this COALESCE would drift, and a search that
- * reads one definition while a listing reads another is a set of results that
- * cannot be paged.
+ * selects and matches on it) and `listMessagesPage` (which matches on it only
+ * when there are terms). Two copies of this COALESCE would drift, and a search
+ * that reads one definition while a listing reads another is a set of results
+ * that cannot be paged.
+ *
+ * **This text is also the definition of `message_body_trgm`**, the trigram
+ * index docs/whatsapp.md has operators build on `"Message"` (#202). Postgres
+ * uses an expression index only when the query's expression is identical to
+ * it, so changing an arm here (adding, removing, reordering) without changing
+ * the documented index makes every search read the whole account again —
+ * silently, with the same results. Change both together and say so in the
+ * release notes, since operators have to rebuild it. Inlined where it is used
+ * rather than behind a `LATERAL` alias, so matching the index never depends on
+ * the planner flattening a subquery.
  */
-function messageBodyJoin(sql: Sql) {
-  return sql`
-    CROSS JOIN LATERAL (
-      SELECT COALESCE(
+function messageBody(sql: Sql) {
+  return sql`COALESCE(
         m.message->>'conversation',
         m.message->'extendedTextMessage'->>'text',
         m.message->'imageMessage'->>'caption',
@@ -1099,10 +1235,20 @@ function messageBodyJoin(sql: Sql) {
         -- groups: Evolution writes the first at top level only, and a reaction
         -- is never an album child or an edit target. COALESCE short-circuits,
         -- so an ordinary text row still stops at the first arm — the extra
-        -- lookups are paid only by rows that produce no body at all, which
-        -- this scan already touches and discards.
-      ) AS body
-    ) t`
+        -- lookups are paid only by rows that produce no body at all.
+      )`
+}
+
+/**
+ * `AND` clauses requiring every term in `messageBody` — an empty fragment for no
+ * terms. Terms already split and bounded, not yet escaped.
+ *
+ * One `ILIKE` per term with a trigram, the rest in one `ILIKE ALL`, so
+ * `message_body_trgm` can serve the search (#202) — `textMatchesAll` in
+ * `search-terms.ts` holds the rule and why, shared with Telegram's search.
+ */
+function bodyMatchesAll(sql: Sql, terms: readonly string[]) {
+  return textMatchesAll(sql, messageBody(sql), terms)
 }
 
 /**

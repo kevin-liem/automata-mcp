@@ -2,6 +2,7 @@
 import { useIntervalFn } from '@vueuse/core'
 import { SendIcon } from '@lucide/vue'
 import { toast } from 'vue-sonner'
+import { TELEGRAM_RECENT_HISTORY_DAYS } from '#shared/history'
 
 /**
  * The link-and-dashboard panel for a Telegram connection. Chosen by
@@ -35,7 +36,10 @@ interface StatusResponse {
   number?: string
   error?: string
   stats?: { messages: number, chats: number }
-  sync?: { backfilling: boolean, pendingBackfill: number, dialogsSyncedAt?: string, pausedUntil?: string }
+  /** `historyDays`: how far back this account's older history is fetched, from the bridge. */
+  sync?: { backfilling: boolean, pendingBackfill: number, dialogsSyncedAt?: string, pausedUntil?: string, historyDays?: number }
+  /** Linking now fetches only recent history (`historyLimited`). Policy, not the linked account's fact. */
+  historyLimitedByPlan?: boolean
 }
 
 interface PairingView {
@@ -262,6 +266,13 @@ const count = new Intl.NumberFormat()
           <SendIcon class="size-4" />
           {{ busy ? 'Starting…' : 'Show QR code' }}
         </Button>
+        <p v-if="data?.historyLimitedByPlan" class="text-xs text-muted-foreground">
+          Your plan syncs the last {{ TELEGRAM_RECENT_HISTORY_DAYS }} days of history when an
+          account is linked; everything that arrives after that is kept.
+          <UpgradeLink>
+            before linking to sync further back.
+          </UpgradeLink>
+        </p>
         <p class="text-xs text-muted-foreground">
           This app signs in as an unofficial Telegram client, which Telegram watches
           more closely than its own apps, and its API terms restrict using chats for
@@ -369,6 +380,12 @@ const count = new Intl.NumberFormat()
         <template v-else>
           New messages sync as they arrive. Older history is fetched within this
           connection's limits, and Claude is told when a chat's history is incomplete.
+        </template>
+        <!-- The bridge's figure — what this link actually uses, not the current
+             plan, which changes nothing until the account is linked again. -->
+        <template v-if="data?.sync?.historyDays !== undefined">
+          Older history reaches back {{ count.format(data.sync.historyDays) }}
+          {{ data.sync.historyDays === 1 ? 'day' : 'days' }}.
         </template>
       </p>
     </template>

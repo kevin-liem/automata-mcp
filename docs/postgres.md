@@ -59,6 +59,16 @@ What the checks do enforce, on every statement:
   query, not `EXPLAIN` text; the server adds its own `EXPLAIN` options, so
   nothing is executed and the server's settings are not disclosed. A plan names
   only tables that passed the scope check.
+- **Bounded time.** `run-query` takes `timeoutMs`, 10 s by default and at most
+  120 s; `run-statement` 15 s by default and at most 60 s. A read that times out
+  answers 504 and points at `explain: true`. When the client disconnects before
+  the answer, the running query is cancelled on the server, so a query the model
+  gave up on does not keep holding one of the connection's few pool slots.
+- **Bounded results.** Rows are fetched in batches against an 8 MiB budget, and a
+  write's `RETURNING` rows are checked the same way; past it the call answers 413
+  and a write is rolled back. Any single server response over 16 MiB drops the
+  connection before it is buffered. Cells are clipped at 2000 characters unless
+  `fullValues: true`.
 
 **Outbound host guard.** A connection string is an address a user chose, so by
 default this server refuses one that resolves to a private or loopback address:

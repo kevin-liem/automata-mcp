@@ -1,0 +1,18 @@
+-- Live messages per session, for the message count in GET /sessions/:id/state.
+--
+-- That count filters on deleted_at IS NULL, which no other index carries, so
+-- without this every one of the session's rows was a visit to the table itself:
+-- a session with hundreds of thousands of messages read all of them per call
+-- (#183). Partial on the same predicate, so the count is an index-only scan.
+--
+-- Not CONCURRENTLY: migrations run in one transaction (db.ts), where it is not
+-- allowed, so this holds a write lock on messages while it builds — sync writes
+-- wait, reads do not. On a large table, create it by hand first and this
+-- becomes a no-op:
+--
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS messages_live_by_session
+--     ON telegram.messages (session_id) WHERE deleted_at IS NULL;
+--
+-- A CONCURRENTLY build that fails leaves an INVALID index under this name, which
+-- IF NOT EXISTS would then keep: drop it and build again before deploying.
+CREATE INDEX IF NOT EXISTS messages_live_by_session ON messages (session_id) WHERE deleted_at IS NULL;

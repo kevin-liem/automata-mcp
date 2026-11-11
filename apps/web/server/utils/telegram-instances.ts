@@ -1,5 +1,7 @@
 import type { AppInstance } from './app-db'
 import type { Actor } from './org'
+import type { BridgeSessionState } from './telegram'
+import { TELEGRAM_RECENT_HISTORY_DAYS } from '#shared/history'
 
 /**
  * Telegram connection lifecycle: the only callers of the bridge's admin key, so
@@ -13,6 +15,31 @@ export interface TelegramProvisionInput {
    * this deployment's configuration — see `telegramAdminCredentials`.
    */
   server?: { baseUrl: string, adminKey: string, dbUrl?: string }
+}
+
+/**
+ * Start linking by QR, with the history cap this connection's plan calls for.
+ *
+ * Fails closed: a limited connection is never paired by a bridge that cannot
+ * apply the cap. A bridge older than per-session caps ignores the request body
+ * and reports no `backfillDays`, so it is asked first — after `pair`, the flow
+ * would already be running uncapped — and refused with 503 and a log line
+ * naming the fix. Unlimited connections pair on any bridge.
+ */
+export async function startTelegramPairing(instance: AppInstance): Promise<BridgeSessionState> {
+  const bridge = telegramBridgeForInstance(instance)
+  // A limited connection fetches only the last `TELEGRAM_RECENT_HISTORY_DAYS`
+  // (`historyLimited`). Decided here, when the bridge stores the cap: upgrading
+  // or lapsing changes nothing for an account already linked until it is
+  // linked again, as with WhatsApp.
+  if (!(await historyLimited(instance))) return await bridge.pair(null)
+
+  const before = await bridge.state()
+  if (typeof before.sync?.backfillDays !== 'number') {
+    console.error(`[telegram] not pairing connection ${instance.id}: its organization fetches ${TELEGRAM_RECENT_HISTORY_DAYS} days of history, and the deployment's Telegram bridge is too old to cap a session's history. Update the bridge to the same release as the app.`)
+    throw createError({ statusCode: 503, statusMessage: 'Linking Telegram accounts is briefly unavailable. Try again in a few minutes.' })
+  }
+  return await bridge.pair(TELEGRAM_RECENT_HISTORY_DAYS)
 }
 
 /**

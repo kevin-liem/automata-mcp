@@ -26,8 +26,9 @@ migrates at boot — `NUXT_DATABASE_URL` is the one thing every deployment needs
 Evolution API and its Redis are dependencies you run **only if you want WhatsApp
 connections** — they sit behind a compose profile,
 and `NUXT_EVOLUTION_URL` / `NUXT_EVOLUTION_ADMIN_KEY` are optional. If you do
-want them, `NUXT_EVOLUTION_DATABASE_URL` is **required** — both WhatsApp read
-tools go through it. See [Reading and searching messages](whatsapp.md#reading-and-searching-messages). The Telegram bridge
+want them, `NUXT_EVOLUTION_DATABASE_URL` is **required** — `read-messages` and
+`search-messages` go through it, and the chat listing and status counts use it
+when it is there. See [Reading and searching messages](whatsapp.md#reading-and-searching-messages). The Telegram bridge
 is the same kind of dependency: run it **only if you want Telegram
 connections**, and every `TELEGRAM_*` / `NUXT_TELEGRAM_*` variable is optional
 until you do.
@@ -36,17 +37,21 @@ until you do.
 
 ```
 apps/web/                    Nuxt 4 + TypeScript. Own Dockerfile, built from the repo root.
-  app/pages/                 index, login, signup, verify-email, team, profile,
-                             billing, no-organization, invite/[code],
-                             instances/{index,new,[id]}
+  app/pages/                 index, login, signup, verify-email, forgot-password,
+                             reset-password, team, profile, billing,
+                             no-organization, invite/[code], instances/{index,new,[id]}
   app/components/            app components + ui/ (shadcn-vue)
   app/composables/           session, organization, connection state, token scope,
                              table paging, API actions
   modules/                   local Nuxt modules (registers /mcp/:token)
   shared/                    types used by both the app and the server
+  public/email/              the account emails' header logo
+  test/                      account-email snapshots and rules (`pnpm test:emails`)
   server/api/                auth (incl. two-factor and email verification), org,
                              invites, instances, tokens, billing, hosted flag,
                              Telegram readiness, Evolution and Telegram webhooks
+  server/middleware/         request body cap (00-body-limit.ts), session cookie
+  server/emails/             account-email templates (HTML + plain text)
   server/mcp/index.ts        MCP handler + auth middleware
   server/mcp/tools/<group>/  one file per tool: whatsapp/, telegram/, sql/, imap/
   server/plugins/            app database, token redaction, per-kind instructions,
@@ -61,7 +66,8 @@ apps/web/                    Nuxt 4 + TypeScript. Own Dockerfile, built from the
                              guard, keyed handle cache, row serialisation, SQL
                              engine seam, Postgres pool / plan guard / runner / catalog,
                              IMAP client / sync / reads, two-factor (TOTP, WebAuthn),
-                             email verification, cloud client, entitlements,
+                             email verification, password reset, cloud client,
+                             entitlements, request deadlines, body and search caps,
                              MCP client and tool-call (Telemetry) recording
 apps/telegram-bridge/        Node + teleproto. Links Telegram accounts, syncs chats to Postgres.
                              Own Dockerfile, built from the repo root.
@@ -219,7 +225,9 @@ docker compose -f docker-compose.dev.yml exec evolution \
 ```
 
 `{"ok":true}` means the path is open; a timeout means the rule is missing or the
-subnet does not match. Everything else in the stack works without this rule —
+subnet does not match. If you set `NUXT_WEBHOOK_SECRET`, add
+`--header='x-webhook-secret: <value>'`, or the answer is a 401 (which still
+proves the path is open). Everything else in the stack works without this rule —
 only inbound webhooks need it.
 
 ## Auth
@@ -232,7 +240,7 @@ back to the browser session.**
 | Credential | Session cookie (`automata_session`, `httpOnly`) | `Authorization: Bearer <token>`, or `/mcp/<token>` |
 | Resolved by | `server/middleware/session.ts` → `server/utils/session.ts` | `server/mcp/index.ts` → `server/utils/mcp-auth.ts` |
 | Context key | `event.context.user` | `event.context.mcpAuth` |
-| Backend client | `evolutionClientForInstance(instance)` / `pgFor(instance)` | `useEvolutionClient()` / `pgFor(instance)` |
+| Backend client | `evolutionClientForInstance(instance)` / `withPg(instance, fn)` | `useEvolutionClient()` / `withPg(instance, fn)` |
 | On failure | 401 JSON | **401 + `WWW-Authenticate`** — never 200 |
 
 `server/middleware/session.ts` returns early on `/mcp`, so cookies are never even
@@ -247,7 +255,7 @@ SHA-256 hash is stored, in `app.mcp_tokens`, alongside
 `last_used_at` and `expires_at`. It resolves to one row in `instances` — the
 connection — which holds that connection's credentials server-side: an Evolution
 token for WhatsApp, a bridge session key for Telegram, a connection string for
-Postgres.
+Postgres, a mailbox username and app password for IMAP.
 
 **This deployment's Evolution global key never reaches a user record.** It is
 used only to create and delete instances on this deployment's server
@@ -267,6 +275,11 @@ Tokens never reach logs or error bodies: `server/plugins/redact-mcp.ts` scrubs
 `/mcp/<token>` to `/mcp/[redacted]` at the source (`event.node.req.originalUrl`,
 which is what Nitro's error handler reads). Route any error reporter you add
 through `redactPath` / `redactHeaders` in `server/utils/redact.ts`.
+
+Request bodies are capped before they are buffered (`server/utils/body-limit.ts`):
+64 KiB for `/api`, 1 MiB for token create and scope edits, 256 KiB for webhooks,
+and 2 MiB for `/mcp`, checked after the token authenticates. A new route that
+needs a larger body needs its own entry there, or it answers 413.
 
 ## Adding tools
 
@@ -314,9 +327,15 @@ dispatches to the engine's runner and applies the table checks. Existing scoped
 tokens will not be granted the new tool — they list the tools they were given, so
 new tools are denied by default.
 
+A new tool also has to be listed in `lhm.plugin.json`, or the release check
+refuses the release: regenerate the list with
+`pnpm listings:tools <url>/.well-known/mcp/server-card.json` against a running
+server, and `pnpm listings:check` verifies it (see [Releases](releases.md)).
+
 Tool handlers get the MCP SDK's `RequestHandlerExtra`, not an H3 event, so
-credentials are reached through `useMcpAuth()`, `useEvolutionClient()` and
-`pgFor()`, which all go through `useEvent()`. That is why
+credentials are reached through `useMcpAuth()` (the bound connection) and
+`useEvolutionClient()`, both of which go through `useEvent()`; Postgres work
+goes through `withPg(instance, fn)` via `server/utils/sql-engine.ts`. That is why
 `nitro.experimental.asyncContext` is enabled in `nuxt.config.ts` — do not turn it off.
 
 ## Editor

@@ -72,12 +72,20 @@ in clear in the app database and its backups.
   that answers "list the folder again" rather than returning a different message.
 - **One email in several folders** — Gmail labels work this way — is listed once,
   with every folder in `folders`.
+- **An email whose headers cannot be stored** (malformed text the database
+  refuses) is listed by date with no subject, sender or attachments instead of
+  stalling the rest of the folder; its body is still readable.
 
 The dashboard shows the sync's state: when it last succeeded, how far each folder
 has got, and why it is failing if it is. **A refused password stops the sync**
 until the credentials are changed or **Sync now** is pressed, since retrying a
 refused login every two minutes is how providers lock accounts. Listings say when
 the sync is behind, so Claude does not present a stale inbox as current.
+
+The mail server's replies are size-capped (1 MiB per line, literals just above
+the attachment cap) and connecting plus logging in must finish within 60
+seconds; a server that exceeds either fails that run rather than affecting
+anyone else's.
 
 The sync runs in the web process and is safe with several replicas: each mailbox
 is claimed with a lease in the database, so only one replica syncs it at a time.
@@ -93,7 +101,7 @@ which **Sync now** reports that a sync is already running.
 | `list-emails` | One page of headers, newest first, from one folder or every synced folder in scope; filter by date, unread, flagged, attachments |
 | `search-emails` | `from`, `to`, `subject` (synced headers) and `text` (the mail server's own search), combined with AND |
 | `read-email` | Headers, the body as plain text (HTML converted), the attachment list; long bodies in pieces with `offset` |
-| `get-email-attachment` | One attachment: images as images, text files as text, anything else (PDFs included) as an embedded file |
+| `get-email-attachment` | One attachment, whole: images as images, text files as text, anything else (PDFs included) as an embedded file |
 | `create-email-draft` | **Write.** Saves an unsent plain-text draft in the Drafts folder; see [Drafts](#drafts) |
 
 The first six only read. Pages use the same envelope as the WhatsApp and Telegram
@@ -105,7 +113,10 @@ Gmail matches whole words using its own search syntax. The search covers at most
 20 folders within 25 seconds, and any folder it did not reach is named in
 `bodySearch.skipped`.
 
-**Attachments are capped** at `NUXT_IMAP_ATTACHMENT_MAX_BYTES` (default 10 MB).
+**Bodies are fetched up to 2 MiB** from the server; a longer one is cut there
+and `read-email` says so.
+
+**Attachments are capped** at `NUXT_IMAP_ATTACHMENT_MAX_BYTES` (default 10 MiB).
 A larger file is refused with its size before anything is downloaded, using the
 size the server reports, and the cap is enforced again on the bytes. Only parts
 the synced message lists as attachments can be fetched.

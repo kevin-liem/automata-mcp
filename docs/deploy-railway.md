@@ -11,7 +11,7 @@ connections alone is **Postgres** and **web**.
 | **Redis** *(WhatsApp only)* | Railway template | — | managed |
 | **evolution** *(WhatsApp only)* | image `evoapicloud/evolution-api:v2.3.7` | 8080 | `/evolution/instances` |
 | **telegram-bridge** *(Telegram only)* | image `ghcr.io/ju-li/automata-mcp-telegram-bridge:1`, or this repo, root directory `/`, Dockerfile path `/apps/telegram-bridge/Dockerfile` | 8095 | — |
-| **web** | image `ghcr.io/ju-li/automata-mcp-web:1`, or this repo, root directory `/`, Dockerfile path `apps/web/Dockerfile` | 3000 | — |
+| **web** | image `ghcr.io/ju-li/automata-mcp-web:1`, or this repo, root directory `/`, Dockerfile path `apps/web/Dockerfile` | Railway's `PORT` (8080 unless you set it) | — |
 
 The published images are the simpler route and the one a Railway template uses —
 see [Releases](releases.md). Building from the repo is for running unreleased code.
@@ -123,6 +123,11 @@ The database URL is the same one Evolution uses; the bridge keeps to its own
 `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` unset (it defaults to 0)** — see [One bridge process at a time](telegram.md#one-bridge-process-at-a-time). Losing `TELEGRAM_SESSION_ENCRYPTION_KEY` unlinks every
 account, so keep a copy somewhere other than Railway.
 
+If the service has a memory limit, set `NODE_OPTIONS=--max-old-space-size=<MB>`
+to about three quarters of it, so Node stops with a heap error in the log rather
+than the container being killed without one. The bridge bounds its own backlog
+(see [What syncs](telegram.md#what-syncs)); this is the back-stop.
+
 **web** — internal addresses for the backends, public URLs for anything a user sees:
 
 ```
@@ -130,7 +135,8 @@ NUXT_DATABASE_URL=${{Postgres.DATABASE_URL}}
 NUXT_PUBLIC_APP_URL=https://<web-domain>
 
 # Mail. Optional — with NUXT_SMTP_HOST empty, alerts and invitation emails are
-# computed and not delivered.
+# computed and not delivered, email verification is off and "Forgot password?"
+# is unavailable (see self-hosting.md#password-reset).
 NUXT_SMTP_HOST=<smtp host>
 NUXT_SMTP_PORT=587
 NUXT_SMTP_USERNAME=<username>
@@ -138,6 +144,7 @@ NUXT_SMTP_PASSWORD=<password>
 NUXT_SMTP_TLS=false          # false = STARTTLS on 587; true = implicit TLS on 465
 NUXT_MAIL_FROM=<a from address the provider will accept>
 NUXT_MAIL_FROM_NAME=DOPE
+NUXT_OPS_ALERT_EMAIL=<your address>   # optional; reconnect loops on this Evolution (alerts.md)
 
 # Checked on both Evolution's and the Telegram bridge's webhooks
 NUXT_WEBHOOK_SECRET=<openssl rand -hex 32>
@@ -205,10 +212,61 @@ Nothing to do. The web service creates its schema in Postgres on first boot —
 look for `[app-db] applied migrations` in its logs.
 
 Then open the web service's domain and sign up. The first account becomes
-the admin; invite everyone else from the Team page.
+the admin; invite everyone else from the Organization page.
+
+## Postgres sizing
+
+Railway's Postgres template starts with the stock settings, sized for a small
+machine: `shared_buffers` 128 MB and `max_connections` 500. Production runs
+with these instead, set once as a superuser (`railway connect Postgres`):
+
+```sql
+ALTER SYSTEM SET shared_buffers = '2GB';
+ALTER SYSTEM SET effective_cache_size = '6GB';
+ALTER SYSTEM SET max_connections = 150;
+```
+
+`ALTER SYSTEM` writes `postgresql.auto.conf` in the data directory
+(`/var/lib/postgresql/data/pgdata`), which is on the service's volume, so the
+settings survive redeploys. `shared_buffers` and `max_connections` take effect
+only at the next restart of the Postgres service; check with `SHOW` afterwards.
+To undo one, run `ALTER SYSTEM RESET <name>;` and restart.
+
+- **`shared_buffers` 2 GB.** At 128 MB, about a third of block reads were served
+  from Postgres's own cache. The rest went to the kernel's file cache.
+- **`effective_cache_size` 6 GB** is a hint to the planner and allocates
+  nothing.
+- **`max_connections` 150, not 100.** Count the connection budget before you
+  lower it or add a pool. Each process's pool ceiling: web 18 (app 10, Evolution
+  reads 3 + 2, Telegram reads 3), Telegram bridge 11 (10 + 1 for its lock
+  connection), cloud 5. Evolution sets no `connection_limit`, so Prisma uses its
+  default of `2 × vCPU + 1`. Add each Postgres connection pointed at this
+  database (up to 3 each), double the ceiling of whichever service is mid-deploy,
+  and multiply by replicas. Postgres also keeps 3 slots back for superusers.
+  `SELECT usename, application_name, count(*) FROM pg_stat_activity GROUP BY 1, 2`
+  shows the live split. Evolution's connections are the ones with no
+  `application_name`.
+- **`work_mem` stays at 16 MB.** The temp files written to disk come from full
+  scans of `"Message"`. Raising it would only let those scans use more memory.
+
+**The memory graph is mostly file cache, and these settings don't shrink it.**
+Railway counts the kernel's cache of the data files as the container's memory,
+and the kernel fills that cache up to the service's limit. So the graph follows
+the size of `"Message"` and how much of it gets scanned, not what Postgres
+needs. The cache is reclaimable, so a large graph is not a sign of memory
+pressure. Two ways to bring it down: set a memory limit on the service, which
+makes the kernel evict cache instead of growing it, or read less of `"Message"`.
+Production has no limit, by choice.
 
 ## Notes
 
+- **Restart Evolution after restarting Postgres.** Evolution's writes fail while
+  Postgres is down, and that can leave a WhatsApp account's session stuck: it
+  reads connected, but nothing is sent or received (see
+  [whatsapp.md](whatsapp.md) "Stuck with the socket dead"). Restarting the
+  Evolution service once Postgres is back reconnects every account without a
+  QR scan. This includes restarts Railway makes itself and the one
+  `shared_buffers` above needs.
 - **Do not ship a `.env`.** It is gitignored, and Railway variables replace it.
 - **`host.docker.internal` does not exist here.** The webhook uses the public
   HTTPS URL instead, which is the only thing that differs between dev and prod —

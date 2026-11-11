@@ -165,23 +165,15 @@ export async function recordTokenClient(tokenId: string, hello: ClientHello): Pr
 
 /**
  * Record the client behind this request if the request is an `initialize`,
- * without ever failing or delaying it: the body read is the one the toolkit
- * would do anyway (h3 caches it), and the write is not awaited.
+ * without ever failing or delaying it: `body` is the request body the MCP
+ * middleware already decoded (h3 caches the bytes for the toolkit's own read),
+ * and the write is not awaited.
  *
  * Call only after the token has authenticated and passed its limit check, so
  * `sessions` counts sessions that were actually served.
  */
-export async function captureTokenClient(event: H3Event, tokenId: string): Promise<void> {
-  if (event.method !== 'POST') return
-
-  let hello: ClientHello | undefined
-  try {
-    hello = parseClientHello(await readRawBody(event, 'utf8'), getRequestHeader(event, 'user-agent'))
-  }
-  catch {
-    // Unreadable body: the toolkit will answer it with its own error.
-    return
-  }
+export function captureTokenClient(event: H3Event, tokenId: string, body: string | undefined): void {
+  const hello = parseClientHello(body, getRequestHeader(event, 'user-agent'))
   if (!hello) return
 
   void recordTokenClient(tokenId, hello).catch((error) => {

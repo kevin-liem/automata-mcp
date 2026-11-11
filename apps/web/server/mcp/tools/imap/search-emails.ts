@@ -10,6 +10,8 @@ import { z } from 'zod'
 export default defineKindTool({
   name: 'search-emails',
   kind: 'imap',
+  // Only `text` reaches the mail server (SEARCH BODY); headers are a local read.
+  expensive: args => typeof args.text === 'string' && args.text.length > 0,
   title: 'Search emails',
   description:
     'Find emails by `from` (part of a sender\'s name or address), `to` (part of a To or Cc '

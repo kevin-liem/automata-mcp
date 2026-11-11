@@ -1,7 +1,7 @@
 {
   "identifier": "ju-li-automata-mcp",
   "name": "Automata",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Scoped, revocable access to your WhatsApp, Telegram, IMAP email and PostgreSQL for AI agents. Read, search and summarise chats and mail, query databases in plain English; sending messages and writing rows only when granted. Each connector token is bound to one connection. Hosted at mcp.getautomata.app (free tier) or self-hosted.",
   "author": "Ju Li",
   "authorUrl": "https://github.com/ju-li",

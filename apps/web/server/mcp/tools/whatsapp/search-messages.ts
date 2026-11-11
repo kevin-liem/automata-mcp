@@ -15,6 +15,8 @@ import type { MentionDirectory } from '~~/server/utils/mentions'
 export default defineKindTool({
   name: 'search-messages',
   kind: 'whatsapp',
+  // A scan over the account's messages: the per-connection budget in mcp-rate-limit.ts.
+  expensive: true,
   // No `messageDatabaseConfigured()` half any more. Both read paths need the
   // database now, so hiding only this one would leave `read-messages` visible
   // and failing — the boot warning in plugins/evolution-db-check.ts is where an

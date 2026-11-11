@@ -8,13 +8,16 @@
 3. **WhatsApp:** continue to the QR code and scan it — WhatsApp → Settings →
    Linked devices → Link a device. To use an Evolution server other than this
    app's, tick **Use my own Evolution API server** first (see [Bring your own Evolution server](whatsapp.md#bring-your-own-evolution-server)).
-   That option exists only on self-hosted deployments.
+   That option exists only on self-hosted deployments. Tick **Import full
+   history** to import everything the phone holds; it is off by default, and on
+   the hosted Free plan only recent history is imported.
    A WhatsApp connection not paired within an hour is deleted with its tokens;
    the pairing screen counts down (see [Connections never paired are removed after an hour](whatsapp.md#connections-never-paired-are-removed-after-an-hour)).
    **Telegram:** on the connection's page press **Show QR code** and scan it —
    Telegram → Settings → Devices → Link Desktop Device. An account with two-step
    verification is then asked for its password, which goes to Telegram and is
-   stored nowhere. Chats start syncing as soon as it links.
+   stored nowhere. Chats start syncing as soon as it links; on the hosted Free
+   plan, older history is fetched back 90 days.
    **Postgres:** paste a connection string, or fill in host, port, database,
    user, password and SSL mode on the **Parameters** tab, which builds one. It
    is proved by connecting before anything is saved (see
@@ -22,10 +25,10 @@
    **Email:** enter the IMAP server and an app password. It is proved by logging
    in before anything is saved, and headers start syncing at once (see
    [Email (IMAP) connections](imap.md)).
-4. On the connection's dashboard, create a **New connector token**: a name, an
+4. On the connection's dashboard, press **New token**: a name, an
    expiry (30 days, 90 days — the default — 1 year, or never) and a scope.
 5. Add it to Claude. The **How to connect** dialog has the steps for Claude.ai
-   (Settings → Connectors → Add custom connector), Claude Code
+   (Settings → Customize → Connectors → Add → Add custom connector), Claude Code
    (`claude mcp add --transport http <name> <url>`), clients that send an
    `Authorization: Bearer` header, and the MCP Inspector.
    **Cursor** (hosted server only): install the Automata plugin from
@@ -45,9 +48,9 @@ Connections belong to an **organization**, not to a person. Signing up creates
 one and makes you its admin; you join someone else's only by accepting an
 invitation, and an account belongs to exactly one organization.
 
-- **Admins** manage the organization (**Team** page): invite people, change
+- **Admins** manage the organization (**Organization** page): invite people, change
   roles, remove members, create and delete connections, assign them, and mint
-  or edit tokens for anyone.
+  or edit tokens for anyone who can reach the connection.
 - **Members** use the connections assigned to them. They see only their own
   tokens there, and may revoke a token or rotate its secret but never widen its
   scope. Reconnecting, re-pairing and deleting are management, so a member is
@@ -58,7 +61,14 @@ with that address, so a forwarded link is useless to anyone else. The link is
 shown once when it is created and can also be emailed (see [Connection alerts](alerts.md)
 for SMTP). Accepting moves you out of your current organization, which is
 refused while that organization still owns connections or while you are its
-only admin with other members left.
+only admin with other members left. With email verification on, an invited
+signup must be confirmed in the same browser it was started in.
+
+**Forgot your password?** **Forgot password?** on the sign-in page mails a link
+and a code, valid for 30 minutes (needs SMTP). An admin can send the same mail to
+a member from the **Organization** page and never sees the link, code or new
+password. A reset never signs you in: it ends every session of the account, and
+two-factor is still asked for at the next sign-in. Connector tokens keep working.
 
 Anything that takes away someone's access to a connection — unassigning it,
 demoting an admin, removing a member — revokes the tokens they held on it, and
@@ -74,11 +84,11 @@ comes back.
 
 | Tool | Kind | | What it does |
 |---|---|---|---|
-| `get-connection-status` | WhatsApp | read | Whether the account is paired and connected (`open`); `flapping` when it reads `open` but keeps reconnecting — shown as **Unstable** on the dashboard, fixed by restarting the Evolution service, not by Reconnect |
-| `list-chats` | WhatsApp | read | Conversations in scope, most recently active first, with the `jid` other tools take; says `hasMore` when it returned one page of several. No read/unread status — WhatsApp's read state isn't available to it |
-| `read-messages` | WhatsApp | read | One chat, newest first, 1–200 per page (default 50), optional `since` / `until`; reports `hasMore`, `nextPage`, `covered` and `totalMatching` |
+| `get-connection-status` | WhatsApp | read | Whether the account is paired and connected (`open`); `flapping` when it reads `open` but keeps reconnecting — shown as **Unstable** on the dashboard — and `stalled` when it reads `open` but its socket was found dead — shown as **Stuck**; both fixed by restarting the Evolution service, not by Reconnect |
+| `list-chats` | WhatsApp | read | Conversations in scope, most recently active first, with the `jid` other tools take; one person stored under both a LID and a phone number is one row listing both in `jids`, and a LID chat carries `phoneNumber` when WhatsApp has revealed it; says `hasMore` when it returned one page of several. No read/unread status — WhatsApp's read state isn't available to it |
+| `read-messages` | WhatsApp | read | One chat, newest first, 1–200 per page (default 50), optional `since` / `until`; reports `hasMore`, `nextPage`, `covered` and `totalMatching`; `recentHistoryOnly: true` when the account's import was partial |
 | `search-messages` | WhatsApp | read | Messages containing every word of `query`, across chats in scope or one `jid`; optional date range and `fromMe`; up to 100 matches (default 20) |
-| `send-text-message` | WhatsApp | **write** | Send text to a number in international format; a refusal (e.g. a number not on WhatsApp) comes back with WhatsApp's reason |
+| `send-text-message` | WhatsApp | **write** | Send text to a chat's full `jid` exactly as `list-chats` / `read-messages` return it (including `…@lid` chats), or to a phone number in international format for someone with no chat yet; bare LID digits are refused; a refusal (e.g. a number not on WhatsApp) comes back with WhatsApp's reason |
 | `get-telegram-status` | Telegram | read | Whether the account is linked and online, who it is signed in as, and how far sync has got |
 | `list-telegram-chats` | Telegram | read | Synced chats in scope — private, groups, supergroups, channels — most recently active first, with the `chatId` other tools take; 1–200 per page (default 100) |
 | `read-telegram-messages` | Telegram | read | One chat, newest first, with the same paging envelope as `read-messages`; optional forum `topicId`; says when older history was never synced |
@@ -89,7 +99,7 @@ comes back.
 | `list-emails` | Email | read | Headers newest first from one folder or all in scope, 1–100 per page (default 25); filters for date, unread, flagged, attachments |
 | `search-emails` | Email | read | `from`, `to`, `subject` against synced headers and `text` through the mail server's own search; filters for date, unread, attachments; 1–100 per page (default 25) |
 | `read-email` | Email | read | One email's headers, body as plain text (fetched live, never stored) and attachment list; `maxChars` 500–100 000 (default 20 000), continued with `offset` |
-| `get-email-attachment` | Email | read | One attachment, fetched live: images as images, text as text (clipped at 100 000 chars, reported as `truncatedAtChars`), other files embedded; 10 MB cap by default |
+| `get-email-attachment` | Email | read | One attachment, fetched live: images as images, text as text, other files embedded — always the whole file; 10 MB cap by default |
 | `create-email-draft` | Email | **write** | Saves an unsent plain-text draft in the Drafts folder, optionally threaded as a reply; never sends |
 | `get-database-info` | Postgres | read | Server version, database, connecting role, and what this token is scoped to |
 | `list-tables` | Postgres | read | Tables in scope, filterable by schema and name, paged (1–500, default 100) |
@@ -104,7 +114,10 @@ Limits and options worth knowing:
 
 - `search-messages` and `search-telegram-messages` need a `query` of at least
   two characters, as does the `text` of `search-emails`. Both message searches
-  return up to 100 matches (default 20).
+  return up to 100 matches (default 20), and take at most 10 words of at most
+  100 characters each (500 characters in all).
+- `run-query` holds at most 8 MiB of results; a larger answer is refused (413)
+  rather than cut, so select narrower columns or fewer rows.
 - `read-telegram-messages` leaves deleted and service messages (joins, pins,
   title changes) out unless called with `includeDeleted: true` or
   `includeService: true`, and counts what it left out as `deletedExcluded` and
@@ -113,6 +126,12 @@ Limits and options worth knowing:
 - `read-email` fetches at most 2 MB of a body from the mail server; anything
   past that is cut before `maxChars` applies.
 - `run-query` and `run-statement` take a `sql` of at most 20 000 characters.
+- Requests are rate-limited per minute: by default 120 per token, 600 per
+  organization, and 30 costly calls per connection (`search-messages`,
+  `search-telegram-messages`, `search-emails` with `text`, and `run-query`
+  without `explain`). Requests are otherwise unlimited. A request over a budget gets
+  **429** with `Retry-After`. The token stays valid, so wait and retry. See
+  [self-hosting.md](self-hosting.md#mcp-rate-limits) to change the numbers.
 
 ## Scoping a token
 
@@ -147,9 +166,12 @@ the connection's dashboard. Which axes appear depends on the kind:
   allows its partitions. What this does and does not protect against is in
   [Database connections](postgres.md).
 
-The chat picker lists conversations Evolution has recorded — the history imported
-at pairing, plus everything since. An account paired before full-history sync was
-switched on shows only the latter until it is re-imported. Either way a number
+The chat picker lists conversations Evolution has recorded — whatever history was
+imported at pairing (the recent part by default, everything the phone holds if
+**Import full history** was ticked), plus everything since. Importing full history
+later costs a new QR scan (**Import full history** on the dashboard). A person
+stored under both a LID and a phone number is one row; ticking it allows both, and
+a token holding only one of the two shows it partly ticked. A number
 that has never messaged you can be added directly; it is checked against WhatsApp
 before it is accepted.
 

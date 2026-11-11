@@ -503,7 +503,7 @@ async function refreshFlags(
 
   if (client.enabled.has('CONDSTORE') && highestModseq) {
     for await (const message of client.fetch(`1:${lastUid}`, { uid: true, flags: true }, { uid: true, changedSince: BigInt(highestModseq) })) {
-      updates.push({ uid: message.uid, flags: [...(message.flags ?? [])] })
+      updates.push({ uid: message.uid, flags: flagList(message.flags) })
     }
   }
   else {
@@ -513,16 +513,30 @@ async function refreshFlags(
       ORDER BY uid DESC LIMIT ${FLAG_REFRESH}`
     if (!rows.length) return
     for await (const message of client.fetch(rows.map(r => Number(r.uid)), { uid: true, flags: true }, { uid: true })) {
-      updates.push({ uid: message.uid, flags: [...(message.flags ?? [])] })
+      updates.push({ uid: message.uid, flags: flagList(message.flags) })
     }
   }
   if (!updates.length) return
 
   // IMAP flags are atoms — no spaces — so a space-joined string round-trips.
+  // Unchanged rows are skipped: Postgres writes a new row version even when the
+  // value is equal, and without CONDSTORE nearly every row here is unchanged —
+  // 500 rewrites per folder every run (#201). The comparison is order-sensitive,
+  // which is why `flagList` sorts.
   await sql`
     UPDATE app.mail_messages m SET flags = string_to_array(v.flags, ' ')
     FROM unnest(${updates.map(u => u.uid)}::bigint[], ${updates.map(u => u.flags.join(' '))}::text[]) AS v(uid, flags)
-    WHERE m.instance_id = ${instance.id} AND m.folder_path = ${path} AND m.uid = v.uid`
+    WHERE m.instance_id = ${instance.id} AND m.folder_path = ${path} AND m.uid = v.uid
+      AND m.flags IS DISTINCT FROM string_to_array(v.flags, ' ')`
+}
+
+/**
+ * A message's flags in a fixed order. imapflow hands them over as a Set in the
+ * server's order, which a server may vary between fetches; stored unsorted, the
+ * unchanged-flags check in `refreshFlags` would read a reshuffle as a change.
+ */
+function flagList(flags: Set<string> | undefined): string[] {
+  return [...(flags ?? [])].sort()
 }
 
 /** Fetch headers for `uids` in batches and upsert them. Bodies are not fetched. */
@@ -646,7 +660,7 @@ function toRow(instanceId: string, path: string, uidvalidity: string, message: F
     cc_addr: addresses(envelope.cc),
     sent_at: validDate(envelope.date),
     received_at: received,
-    flags: [...(message.flags ?? [])],
+    flags: flagList(message.flags),
     size: message.size,
     text_part: parts.textPart,
     html_part: parts.htmlPart,

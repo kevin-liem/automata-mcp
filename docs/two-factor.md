@@ -43,7 +43,10 @@ in fifteen minutes: per account for the second step (failed attempts only), and 
 and per client address for the password. They are in memory, per process.
 
 Adding or removing a factor, or regenerating recovery codes, asks for the
-current password. Turning 2FA on signs out every other session of that account.
+current password. That check — also used to change your email or password — has
+its own per-account throttle, ten wrong answers in fifteen minutes, so a stolen
+session cannot guess the password there. Turning 2FA on signs out every other
+session of that account; removing the last factor deletes the recovery codes.
 
 ## Passkeys depend on `NUXT_PUBLIC_APP_URL`
 

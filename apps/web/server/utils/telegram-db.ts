@@ -422,11 +422,8 @@ export async function listTelegramMessagesPage(
   const sessionId = sessionIdOf(instance)
   const since = parseDateBound(options.since, 'since')
   const until = parseDateBound(options.until, 'until')
-
+  // Checked again by `textMatchesAll`; here so the 400 comes before any query.
   if (options.terms) assertSearchTerms(options.terms)
-  const patterns = options.terms?.length
-    ? options.terms.map(term => `%${escapeLike(term)}%`)
-    : undefined
 
   // Everything that bounds the set, shared by the page and the excluded counts
   // so the two describe the same window — the scope predicates included, because
@@ -435,7 +432,7 @@ export async function listTelegramMessagesPage(
   const window = (sql: Sql) => sql`
     ${options.chatId === undefined ? sql`` : sql`AND m.chat_id = ${options.chatId}`}
     ${options.allowedChatIds ? sql`AND m.chat_id = ANY(${options.allowedChatIds}::bigint[])` : sql``}
-    ${patterns === undefined ? sql`` : sql`AND m.text ILIKE ALL (${patterns}::text[])`}
+    ${options.terms === undefined ? sql`` : textMatchesAll(sql, sql`m.text`, options.terms)}
     ${since ? sql`AND m.date >= ${since}` : sql``}
     ${until ? sql`AND m.date <= ${until}` : sql``}
     ${options.topicId === undefined ? sql`` : sql`AND m.topic_id = ${options.topicId}`}`
@@ -517,7 +514,6 @@ export async function searchTelegramMessages(
   const since = parseDateBound(options.since, 'since')
   const until = parseDateBound(options.until, 'until')
   assertSearchTerms(options.terms)
-  const patterns = options.terms.map(term => `%${term.replace(/[\\%_]/g, char => `\\${char}`)}%`)
 
   const rows = await guarded('search messages', () => query(sql => sql<Array<MessageDbRow & { chat_id: string, chat_title: string | null }>>`
     SELECT m.chat_id::text AS chat_id, c.title AS chat_title,
@@ -529,7 +525,7 @@ export async function searchTelegramMessages(
     LEFT JOIN telegram.chats sc ON sc.session_id = m.session_id AND sc.chat_id = m.sender_id AND m.sender_id < 0
     WHERE m.session_id = ${sessionId}
       AND m.deleted_at IS NULL
-      AND m.text ILIKE ALL (${patterns}::text[])
+      ${textMatchesAll(sql, sql`m.text`, options.terms)}
       ${options.chatId ? sql`AND m.chat_id = ${options.chatId}` : sql``}
       ${options.allowedChatIds ? sql`AND m.chat_id = ANY(${options.allowedChatIds}::bigint[])` : sql``}
       ${since ? sql`AND m.date >= ${since}` : sql``}
