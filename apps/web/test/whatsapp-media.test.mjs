@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { createRequire, registerHooks } from 'node:module'
 import { fetchWhatsAppMedia, WHATSAPP_MEDIA_MAX_BYTES } from '../server/utils/whatsapp-media.ts'
+
+// Use the SDK version that the production toolkit registers tools with.
+const toolkitRequire = createRequire(import.meta.resolve('@nuxtjs/mcp-toolkit'))
+const { McpServer } = toolkitRequire('@modelcontextprotocol/sdk/server/mcp.js')
+const { Client } = toolkitRequire('@modelcontextprotocol/sdk/client/index.js')
+const { InMemoryTransport } = toolkitRequire('@modelcontextprotocol/sdk/inMemory.js')
+
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier === './tool-calls') return next(new URL('../server/utils/tool-calls.ts', import.meta.url).href, context)
+  return next(specifier, context)
+} })
+const { defineKindTool } = await import('../server/utils/mcp-kind-tool.ts')
 
 // Nuxt supplies these auto-imports in production. Keep the tool itself intact
 // and replace only its authenticated database and Evolution boundaries here.
@@ -18,7 +32,8 @@ let lookup
 let links
 
 Object.assign(globalThis, {
-  defineKindTool: definition => definition,
+  defineKindTool,
+  defineMcpTool: definition => definition,
   useMcpAuth: () => ({ instance, scope, tokenId: 'media-token', kind: 'whatsapp' }),
   fetchWhatsAppMedia,
   WHATSAPP_MEDIA_MAX_BYTES,
@@ -46,6 +61,20 @@ Object.assign(globalThis, {
 })
 const { default: tool } = await import('../server/mcp/tools/whatsapp/get-whatsapp-media.ts')
 
+async function mediaClient(t) {
+  const server = new McpServer({ name: 'whatsapp-media-test', version: '1' })
+  server.registerTool(tool.name, {
+    title: tool.title, description: tool.description, inputSchema: tool.inputSchema,
+    annotations: tool.annotations,
+  }, tool.handler)
+  const client = new Client({ name: 'media-test-client', version: '1' })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  t.after(async () => { await client.close(); await server.close() })
+  await server.connect(serverTransport)
+  await client.connect(clientTransport)
+  return client
+}
+
 function prepare(type = 'imageMessage', mimeType = 'image/png', data = Buffer.from([0, 255, 128, 1])) {
   const media = { mimetype: mimeType, fileLength: data.length }
   record = { key, messageType: type, message: { [type]: media } }
@@ -55,6 +84,50 @@ function prepare(type = 'imageMessage', mimeType = 'image/png', data = Buffer.fr
   links = []
   return { media, data }
 }
+
+test('tools/list exposes every optional delivery mode and chunk control to MCP clients', async t => {
+  const client = await mediaClient(t)
+  const { tools } = await client.listTools()
+  const listed = tools.find(value => value.name === tool.name)
+  assert.ok(listed)
+  const { properties, required } = listed.inputSchema
+  assert.deepEqual(properties.delivery.enum, ['auto', 'native', 'file', 'base64'])
+  assert.equal(properties.delivery.default, 'auto')
+  assert.equal(properties.offset.default, 0)
+  assert.equal(properties.offset.maximum, WHATSAPP_MEDIA_MAX_BYTES)
+  assert.equal(properties.limit.default, 12 * 1024)
+  assert.equal(properties.limit.maximum, 48 * 1024)
+  assert.deepEqual(required, ['jid', 'messageId'])
+  assert.ok(properties.reason)
+
+  const manifest = JSON.parse(readFileSync(new URL('../../../lhm.plugin.json', import.meta.url), 'utf8'))
+  const published = manifest.tools.find(value => value.name === tool.name)
+  assert.equal(published.description, `[WhatsApp] ${listed.description}`)
+  for (const field of ['delivery', 'offset', 'limit']) {
+    assert.deepEqual(published.inputSchema.properties[field], properties[field])
+  }
+})
+
+test('an MCP client can select native audio from discovery while omitted delivery keeps download links', async t => {
+  const { data } = prepare('audioMessage', 'audio/ogg; codecs=opus')
+  const client = await mediaClient(t)
+  const native = await client.callTool({ name: tool.name, arguments: { jid, messageId, delivery: 'native' } })
+  assert.ok(!native.isError)
+  assert.equal(native.content[1].type, 'audio')
+  assert.deepEqual(Buffer.from(native.content[1].data, 'base64'), data)
+  assert.equal(JSON.parse(native.content[0].text).delivery, 'native')
+  assert.equal(links.length, 0)
+
+  const automatic = await client.callTool({ name: tool.name, arguments: { jid, messageId } })
+  assert.ok(!automatic.isError)
+  assert.equal(automatic.content[1].type, 'resource_link')
+  assert.equal(JSON.parse(automatic.content[0].text).delivery, 'auto')
+
+  const before = downloads.length
+  const invalid = await client.callTool({ name: tool.name, arguments: { jid, messageId, delivery: 'unsupported' } })
+  assert.equal(invalid.isError, true)
+  assert.equal(downloads.length, before)
+})
 
 const formats = [
   ['imageMessage', 'image/png', 'image'],

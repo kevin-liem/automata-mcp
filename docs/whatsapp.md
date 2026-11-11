@@ -238,6 +238,15 @@ block contains the file:
 | MP4 and other video, including round video messages | `video/mp4`, other video MIME types | `{ "type": "resource", "resource": { "uri": "…", "mimeType": "…", "blob": "<base64>" } }` |
 | PDF, Office files, text, archives, HEIC and other formats | Original MIME type, or `application/octet-stream` when unknown | Same embedded `resource` shape |
 
+`delivery` is an optional tool argument, advertised by `tools/list` with the
+values `auto`, `native`, `file` and `base64`. `offset` and `limit` are also
+advertised for text-only chunks; only `jid` and `messageId` are required.
+For example, an audio-capable client can request the recording directly:
+
+```json
+{"jid":"<jid from read-messages>","messageId":"<exact audio entry id>","delivery":"native"}
+```
+
 `data` and `blob` are standard padded base64 strings, without a `data:` prefix.
 MIME types are lower-cased and parameters are removed: an Opus voice note
 reported as `audio/ogg; codecs=opus` is returned as `audio/ogg`, with unchanged
@@ -296,6 +305,14 @@ to listen or transcribe. Metadata alone does not reveal the recording's words.
 
 After deploying changed tool definitions, refresh the connector once. Users
 can then keep asking naturally without specifying `delivery`, `offset` or `limit`.
+If an agent still sees only `jid`, `messageId` and `reason`, compare an
+authenticated `tools/list` response from Automata and from the bridge. Both must
+include `delivery`, `offset` and `limit`. Missing fields at Automata indicate an
+older deployment or the wrong endpoint; if only the bridge response omits them,
+check the bridge's configured upstream and deployment. When both responses
+contain the fields, refresh or reconnect the host connector and start a new
+conversation to load the updated tool schema. Deploying server code alone does not guarantee that a
+host refreshes the tool schema already loaded into a conversation.
 
 ## Chats addressed by LID (`…@lid`)
 

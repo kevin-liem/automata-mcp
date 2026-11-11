@@ -210,7 +210,7 @@
     {
       "name": "get-whatsapp-media",
       "title": "Get WhatsApp media",
-      "description": "[WhatsApp] Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. Copy the chat `jid` and exact message `id` as `messageId` from read-messages or search-messages; do not infer an ID from a timestamp. For ordinary download requests, pass only jid and messageId. The default returns a temporary downloadUrl and file metadata; present downloadUrl as a clickable download link. Image previews are included when supported. The link expires after five minutes; call this tool again for a fresh link. Files over 10 MiB are refused. Advanced clients can request delivery: \"native\" for MCP image/audio, or delivery: \"file\" for an embedded file. If a client needs bytes through text only, use `delivery: \"base64\"`: it returns the actual file bytes as a bounded base64 chunk in JSON text, with metadata and a SHA-256 checksum. Repeat with `nextOffset` until `hasMore` is false, decode each chunk separately, then concatenate the decoded bytes to save the file. `delivery: \"file\"` returns an embedded file instead of native image/audio. Downloading audio does not transcribe it. Older attachments may have expired from WhatsApp.",
+      "description": "[WhatsApp] Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. Choose the optional `delivery` mode: \"auto\" (default) for a download link, \"native\" for inline MCP image/audio, \"file\" for an embedded file, or \"base64\" for text-only byte chunks. Copy the chat `jid` and exact message `id` as `messageId` from read-messages or search-messages; do not infer an ID from a timestamp. For ordinary download requests, pass only jid and messageId. The default returns a temporary downloadUrl and file metadata; present downloadUrl as a clickable download link. Image previews are included when supported. The link expires after five minutes; call this tool again for a fresh link. Files over 10 MiB are refused. Use delivery: \"native\" when the client needs image/audio content directly; video and other formats remain embedded files. If a client needs bytes through text only, use `delivery: \"base64\"`: it returns the actual file bytes as a bounded base64 chunk in JSON text, with metadata and a SHA-256 checksum. Repeat with `nextOffset` until `hasMore` is false, decode each chunk separately, then concatenate the decoded bytes to save the file. `delivery: \"file\"` returns an embedded file instead of native image/audio. Downloading audio does not transcribe it. Older attachments may have expired from WhatsApp.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -228,7 +228,7 @@
           },
           "delivery": {
             "default": "auto",
-            "description": "Leave auto for ordinary requests: temporary download link plus metadata and image preview. Other modes are for clients explicitly needing native media, embedded files, or base64 chunks.",
+            "description": "How to return the attachment: auto = temporary download link and supported image preview (default); native = inline MCP image/audio, with other formats embedded as resources; file = embedded resource for any format; base64 = text-only byte chunks using offset/limit. Native audio depends on client support.",
             "type": "string",
             "enum": [
               "auto",

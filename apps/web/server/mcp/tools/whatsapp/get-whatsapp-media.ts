@@ -11,12 +11,14 @@ export default defineKindTool({
   title: 'Get WhatsApp media',
   description:
     'Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. '
+    + 'Choose the optional `delivery` mode: "auto" (default) for a download link, "native" for inline MCP image/audio, '
+    + '"file" for an embedded file, or "base64" for text-only byte chunks. '
     + 'Copy the chat `jid` and exact message `id` as `messageId` from read-messages or search-messages; do not infer an ID from a timestamp. '
     + 'For ordinary download requests, pass only jid and messageId. The default returns a temporary downloadUrl '
     + 'and file metadata; present downloadUrl as a clickable download link. Image previews are included when supported. '
     + 'The link expires after five minutes; call this tool again for a fresh link. '
     + 'Files over 10 MiB are refused. '
-    + 'Advanced clients can request delivery: "native" for MCP image/audio, or delivery: "file" for an embedded file. '
+    + 'Use delivery: "native" when the client needs image/audio content directly; video and other formats remain embedded files. '
     + 'If a client needs bytes through text only, use `delivery: "base64"`: '
     + 'it returns the actual file bytes as a bounded base64 chunk in JSON text, with metadata and a SHA-256 checksum. '
     + 'Repeat with `nextOffset` until `hasMore` is false, decode each chunk separately, then concatenate the decoded bytes to save the file. '
@@ -31,7 +33,7 @@ export default defineKindTool({
   inputSchema: {
     jid: z.string().min(1).max(256).describe('The full chat JID, exactly as returned by read-messages or search-messages'),
     messageId: z.string().min(1).max(256).describe('Copy the exact id from the desired media entry in read-messages or search-messages'),
-    delivery: z.enum(['auto', 'native', 'file', 'base64']).default('auto').describe('Leave auto for ordinary requests: temporary download link plus metadata and image preview. Other modes are for clients explicitly needing native media, embedded files, or base64 chunks.'),
+    delivery: z.enum(['auto', 'native', 'file', 'base64']).default('auto').describe('How to return the attachment: auto = temporary download link and supported image preview (default); native = inline MCP image/audio, with other formats embedded as resources; file = embedded resource for any format; base64 = text-only byte chunks using offset/limit. Native audio depends on client support.'),
     offset: z.number().int().min(0).max(WHATSAPP_MEDIA_MAX_BYTES).default(0).describe('For base64 delivery only: decoded byte offset, starting at 0; use nextOffset to continue'),
     limit: z.number().int().min(1).max(MAX_CHUNK_BYTES).default(DEFAULT_CHUNK_BYTES).describe('For base64 delivery only: maximum decoded bytes in this chunk, default 12 KiB and maximum 48 KiB'),
   },
