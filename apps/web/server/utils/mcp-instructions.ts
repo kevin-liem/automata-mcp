@@ -48,7 +48,7 @@ export const WHATSAPP_INSTRUCTIONS = [
   'for. Page with `nextPage` until `hasMore` is false before summarising or reporting on a range,',
   'and treat `covered` — not the range you requested — as what you have actually read.',
   'Use `get-whatsapp-media` with the chat `jid` and the message `id` as `messageId` when you need',
-  'the image, video or voice recording. Older attachments may have expired.',
+  'the image, video, audio recording, document or sticker. Older attachments may have expired.',
   'Reactions are stored as ordinary messages, one record per emoji, and are left out of both',
   'reads and searches unless you pass `includeReactions: true` — a response that omitted them',
   'says so with `reactionsExcluded`. Ask for them when who reacted is the question, not to',

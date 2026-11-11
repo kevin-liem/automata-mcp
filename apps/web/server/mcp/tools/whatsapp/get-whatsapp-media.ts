@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'ptvMessage'] as const
+const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'ptvMessage', 'documentMessage', 'stickerMessage'] as const
 const INLINE_IMAGE = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024
 const MAX_RESPONSE_BYTES = 4 * Math.ceil(MAX_MEDIA_BYTES / 3) + 64 * 1024
@@ -16,10 +16,11 @@ export default defineKindTool({
   kind: 'whatsapp',
   title: 'Get WhatsApp media',
   description:
-    'Download one image, video or voice recording from an in-scope WhatsApp chat. '
+    'Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. '
     + 'Pass the chat `jid` and the message `id` as `messageId` from read-messages or search-messages. '
     + 'Images and audio are returned as MCP media when supported by their format, '
-    + 'and videos are returned as embedded files. Files over 10 MiB are refused. '
+    + 'and other formats are returned as embedded files with their original bytes and MIME type. '
+    + 'Files over 10 MiB are refused. '
     + 'Older attachments may have expired from WhatsApp.',
   annotations: {
     readOnlyHint: true,
@@ -44,7 +45,7 @@ export default defineKindTool({
     const type = MEDIA_TYPES.find(type => payload?.[type])
     const media = type && payload?.[type]
     if (!type || !media || typeof media !== 'object' || media.viewOnce === true) {
-      throw createError({ statusCode: 422, message: 'This message does not have a downloadable image, video or voice recording.' })
+      throw createError({ statusCode: 422, message: 'This message does not have a downloadable image, video, audio recording, document or sticker.' })
     }
     if (fileLength(media.fileLength) > MAX_MEDIA_BYTES) throw mediaTooLarge()
 
@@ -66,7 +67,7 @@ export default defineKindTool({
 
     const reportedType = file.mimetype || (typeof media.mimetype === 'string' ? media.mimetype : '')
     const mimeType = reportedType.split(';', 1)[0]?.trim().toLowerCase() || 'application/octet-stream'
-    const filename = file.fileName || messageId
+    const filename = file.fileName || (typeof media.fileName === 'string' && media.fileName) || messageId
     const attachment = INLINE_IMAGE.has(mimeType)
       ? { type: 'image' as const, data: file.base64, mimeType }
       : mimeType.startsWith('audio/')
@@ -74,7 +75,7 @@ export default defineKindTool({
         : {
             type: 'resource' as const,
             resource: {
-              uri: `whatsapp-media:///${encodeURIComponent(jid)}/${encodeURIComponent(messageId)}`,
+              uri: `whatsapp-media:///${encodeURIComponent(jid)}/${encodeURIComponent(messageId)}/${encodeURIComponent(filename)}`,
               mimeType,
               blob: file.base64,
             },

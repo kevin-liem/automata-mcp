@@ -51,11 +51,12 @@ pnpm cloud:typecheck  # the cloud service; not covered by `pnpm typecheck` eithe
 pnpm dev              # Nuxt on the host, http://localhost:3000
 pnpm typecheck        # nuxt typecheck across app + server
 pnpm test:emails      # account-email snapshots and rendering checks
+pnpm test:media       # WhatsApp media bytes, MCP formats, scope and size limits
 pnpm build            # production build -> apps/web/.output/
 pnpm services:down / :logs / :ps
 ```
 
-Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services up yourself. There is no lint config or test framework. The automated checks are `pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck` and `pnpm test:emails`.
+Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services up yourself. There is no lint config or test framework. The automated checks are `pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck`, `pnpm test:emails` and `pnpm test:media`.
 
 ## Environment
 

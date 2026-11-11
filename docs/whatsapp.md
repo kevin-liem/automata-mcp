@@ -183,10 +183,37 @@ Call `get-whatsapp-media` with the chat's `jid` and pass the message's `id` as
 with an explicit tool allowlist must include `get-whatsapp-media`, and the chat
 must be within the token's scope.
 
-The tool fetches one image, video or voice recording on demand, up to 10 MiB.
-Common image formats and audio come back as MCP media. Videos come back as
-embedded files. Preview and export depend on the MCP client. Older attachments
-can expire even when the message still appears in history.
+The tool fetches one image, video, audio recording, document or sticker on
+demand, up to **10 MiB (10,485,760 decoded bytes)**. It preserves the downloaded
+bytes; it does not convert file formats. Older attachments can expire even when
+the message still appears in history. View-once media is refused.
+
+Every successful MCP tool result has a `content` array. The first block is
+`{ "type": "text", "text": "<JSON metadata>" }`, where the metadata contains
+`jid`, `messageId`, `filename`, `mimeType` and decoded byte `size`. The second
+block contains the file:
+
+| File format | MIME type | MCP content block |
+| --- | --- | --- |
+| JPEG, PNG, GIF, WebP (including WebP stickers) | `image/jpeg`, `image/png`, `image/gif`, `image/webp` | `{ "type": "image", "mimeType": "…", "data": "<base64>" }` |
+| Ogg/Opus voice notes, MP3, M4A, WAV and other audio | `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`, other `audio/*` | `{ "type": "audio", "mimeType": "…", "data": "<base64>" }` |
+| MP4 and other video, including round video messages | `video/mp4`, other video MIME types | `{ "type": "resource", "resource": { "uri": "…", "mimeType": "…", "blob": "<base64>" } }` |
+| PDF, Office files, text, archives, HEIC and other formats | Original MIME type, or `application/octet-stream` when unknown | Same embedded `resource` shape |
+
+`data` and `blob` are standard padded base64 strings, without a `data:` prefix.
+MIME types are lower-cased and parameters are removed: an Opus voice note
+reported as `audio/ogg; codecs=opus` is returned as `audio/ogg`, with unchanged
+Ogg bytes. Filenames are taken from Evolution, then the stored message, falling
+back to the message ID. Embedded resource URIs include the encoded filename:
+`whatsapp-media:///<jid>/<messageId>/<filename>`. They identify bytes already
+included in `blob`; they are not HTTP download URLs or a separate
+`resources/read` endpoint.
+
+An MCP bridge must forward the complete JSON-RPC response, including all
+`content` blocks, over either JSON or SSE. A 10 MiB file occupies about
+13.33 MiB in base64 before the JSON metadata. Agents can decode `data` or `blob`
+to recover the original file. Preview, playback and model understanding depend
+on the MCP client's support for that MIME type.
 
 ## Chats addressed by LID (`…@lid`)
 

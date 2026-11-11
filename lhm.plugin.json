@@ -210,7 +210,7 @@
     {
       "name": "get-whatsapp-media",
       "title": "Get WhatsApp media",
-      "description": "[WhatsApp] Download one image, video or voice recording from an in-scope WhatsApp chat. Pass the chat `jid` and the message `id` as `messageId` from read-messages or search-messages. Images and audio are returned as MCP media when supported by their format, and videos are returned as embedded files. Files over 10 MiB are refused. Older attachments may have expired from WhatsApp.",
+      "description": "[WhatsApp] Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. Pass the chat `jid` and the message `id` as `messageId` from read-messages or search-messages. Images and audio are returned as MCP media when supported by their format, and other formats are returned as embedded files with their original bytes and MIME type. Files over 10 MiB are refused. Older attachments may have expired from WhatsApp.",
       "inputSchema": {
         "type": "object",
         "properties": {
