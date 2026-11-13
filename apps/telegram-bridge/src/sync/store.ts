@@ -16,6 +16,24 @@ export type TrackedChannel = { chat_id: string, access_hash: string, channel_pts
  * **A tombstone is never resurrected.** Every message upsert is conditional on
  * `deleted_at IS NULL`, so a backfill page fetched a moment before a deletion
  * cannot put the deleted text back.
+ *
+ * **One session's writes run one at a time (#220).** The live queue, the channel
+ * catch-up worker, the dialog pass, backfill and sends all write the same few
+ * `chats` and `messages` rows, each in its own order, and Postgres answered two
+ * of them overlapping with `deadlock detected` — losing a reconcile, or sending a
+ * live batch down the one-at-a-time path. Every method here that writes `users`,
+ * `chats` or `messages` goes through `serialized`, a per-session queue shared by
+ * every SyncStore for that session in this process (a rebuilt client's syncer
+ * and the old one's last write included). Sessions never share rows, so this
+ * costs no concurrency between them. It is held only around database work —
+ * never around a request to Telegram — and statement_timeout bounds each
+ * statement under it. Reads take no lock.
+ *
+ * Two backstops for a writer outside this process (an overlapping deploy, a
+ * repair script): every multi-row statement lists its rows in key order, so two
+ * writers lock shared rows in the same order; and a transaction that still dies
+ * with a deadlock or serialization failure is run once more before its caller
+ * hears about it.
  */
 
 type Db = Sql | postgres.TransactionSql
@@ -82,6 +100,41 @@ const INT4 = 23
 const INT8 = 20
 const TIMESTAMPTZ = 1184
 
+/** Postgres's answers for a transaction that lost to another and is worth running again. */
+const RETRYABLE = new Set(['40P01', '40001'])
+
+/** Per session: the tail of its write queue. Removed once the queue is empty. */
+const writeQueues = new Map<string, Promise<void>>()
+
+/**
+ * Run `task` after every write already queued for `sessionId`, and before any
+ * queued after it. A deadlock or serialization failure is retried once.
+ */
+async function serialized<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+  const previous = writeQueues.get(sessionId) ?? Promise.resolve()
+  const run = previous.then(() => retryOnce(sessionId, task))
+  const tail = run.then(() => {}, () => {})
+  writeQueues.set(sessionId, tail)
+  try {
+    return await run
+  }
+  finally {
+    if (writeQueues.get(sessionId) === tail) writeQueues.delete(sessionId)
+  }
+}
+
+async function retryOnce<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+  try {
+    return await task()
+  }
+  catch (error) {
+    const code = (error as { code?: unknown } | undefined)?.code
+    if (typeof code !== 'string' || !RETRYABLE.has(code)) throw error
+    console.info(`[sync] ${sessionId}: a write lost to another (${code}); running it again`)
+    return await task()
+  }
+}
+
 export class SyncStore {
   private readonly sql: Sql
   private readonly sessionId: string
@@ -91,8 +144,13 @@ export class SyncStore {
     this.sessionId = sessionId
   }
 
+  /** Every write goes through here: see the note on serialisation above. */
+  private write<T>(task: () => Promise<T>): Promise<T> {
+    return serialized(this.sessionId, task)
+  }
+
   async upsertUsers(rows: UserRow[]): Promise<void> {
-    await this.usersQuery(this.sql, rows)
+    await this.write(async () => { await this.usersQuery(this.sql, rows) })
   }
 
   private usersQuery(db: Db, rows: UserRow[]) {
@@ -112,7 +170,7 @@ export class SyncStore {
 
   /** Chats that carry messages: created when new, refreshed when known. */
   async upsertChats(rows: ChatRow[]): Promise<void> {
-    await this.chatsQuery(this.sql, rows)
+    await this.write(async () => { await this.chatsQuery(this.sql, rows) })
   }
 
   private chatsQuery(db: Db, rows: ChatRow[]) {
@@ -137,8 +195,10 @@ export class SyncStore {
    * forwarded from is not a chat of yours.
    */
   async refreshKnownChats(rows: ChatRow[]): Promise<void> {
-    const known = await this.existingChats(this.sql, rows.map(row => row.chat_id))
-    await this.upsertChats(rows.filter(row => known.has(row.chat_id)))
+    await this.write(async () => {
+      const known = await this.existingChats(this.sql, rows.map(row => row.chat_id))
+      await this.chatsQuery(this.sql, rows.filter(row => known.has(row.chat_id)))
+    })
   }
 
   private async existingChats(db: Db, chatIds: string[]): Promise<Set<string>> {
@@ -152,11 +212,11 @@ export class SyncStore {
 
   /** A placeholder row for a chat whose entity has not arrived, so its messages can be stored. */
   async ensureChats(chatIds: string[]): Promise<void> {
-    await this.stubsQuery(this.sql, chatIds)
+    await this.write(async () => { await this.stubsQuery(this.sql, chatIds) })
   }
 
   private stubsQuery(db: Db, chatIds: string[]) {
-    const unique = [...new Set(chatIds)]
+    const unique = [...new Set(chatIds)].sort(byId)
     if (unique.length === 0) return undefined
     return db`
       INSERT INTO chats ${db(unique.map(chatId => ({ session_id: this.sessionId, chat_id: chatId, type: stubType(chatId) })))}
@@ -170,7 +230,7 @@ export class SyncStore {
     archived: boolean
     pts: number | null
   }): Promise<void> {
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE chats SET
         top_message_id = GREATEST(top_message_id, ${dialog.topMessageId}),
         unread_count = ${dialog.unreadCount},
@@ -178,11 +238,13 @@ export class SyncStore {
         archived = ${dialog.archived},
         channel_pts = COALESCE(channel_pts, ${dialog.pts}),
         updated_at = now()
-      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`
+      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`)
   }
 
   async upsertMessages(rows: MessageRow[]): Promise<void> {
-    for (const query of this.messagesQueries(this.sql, rows)) await query
+    await this.write(async () => {
+      for (const query of this.messagesQueries(this.sql, rows)) await query
+    })
   }
 
   /** The upsert, then the chats' latest-message bookkeeping. Run in this order. */
@@ -231,6 +293,7 @@ export class SyncStore {
 
     // Over every row, not the merged ones: GREATEST is what one write per row
     // would have arrived at, whichever copy of a message carried the larger value.
+    // Grouped in chat order, so the chats are reached in that order.
     const latest = db`
       UPDATE chats SET
         last_message_at = GREATEST(chats.last_message_at, latest.date),
@@ -243,6 +306,7 @@ export class SyncStore {
           ${db.array(rows.map(row => String(row.message_id)), INT8)}::bigint[]
         ) AS m (chat_id, date, message_id)
         GROUP BY chat_id
+        ORDER BY chat_id
       ) AS latest
       WHERE chats.session_id = ${this.sessionId} AND chats.chat_id = latest.chat_id`
 
@@ -271,10 +335,10 @@ export class SyncStore {
     const ops = batch.chats ?? []
     const messages = batch.messages ?? []
     const migrations = batch.migrations ?? []
-    const channelPts = [...(batch.channelPts ?? new Map<string, number>())]
+    const channelPts = [...(batch.channelPts ?? new Map<string, number>())].sort(([a], [b]) => byId(a, b))
     const refreshIds = ops.flatMap(op => op.op === 'refresh' ? [op.row.chat_id] : [])
 
-    await this.sql.begin(async (tx) => {
+    await this.write(() => this.sql.begin(async (tx) => {
       const { rows, stubs } = resolveChatOps(ops, await this.existingChats(tx, refreshIds))
       const queries = [
         this.usersQuery(tx, batch.users ?? []),
@@ -296,30 +360,30 @@ export class SyncStore {
         ]),
       ]
       await Promise.all(queries.filter(query => query !== undefined))
-    })
+    }))
   }
 
   /** Deletions from private chats and basic groups arrive as bare ids; see messages_common_box_id. */
   async tombstoneCommon(messageIds: number[]): Promise<void> {
     if (messageIds.length === 0) return
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE messages SET text = NULL, entities = NULL, deleted_at = now()
       WHERE session_id = ${this.sessionId} AND NOT in_channel AND deleted_at IS NULL
-        AND message_id = ANY(${this.sql.array(messageIds.map(String), INT8)})`
+        AND message_id = ANY(${this.sql.array(messageIds.map(String), INT8)})`)
   }
 
   async tombstoneInChat(chatId: string, messageIds: number[]): Promise<void> {
     if (messageIds.length === 0) return
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE messages SET text = NULL, entities = NULL, deleted_at = now()
       WHERE session_id = ${this.sessionId} AND chat_id = ${chatId} AND deleted_at IS NULL
-        AND message_id = ANY(${this.sql.array(messageIds.map(String), INT8)})`
+        AND message_id = ANY(${this.sql.array(messageIds.map(String), INT8)})`)
   }
 
   async setReactions(chatId: string, messageId: number, reactions: Reaction[] | null): Promise<void> {
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE messages SET reactions = ${reactions === null ? null : this.sql.json(reactions as unknown as postgres.JSONValue)}
-      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId} AND message_id = ${messageId}`
+      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId} AND message_id = ${messageId}`)
   }
 
   private migratedQuery(db: Db, fromChatId: string, toChatId: string) {
@@ -334,18 +398,18 @@ export class SyncStore {
    */
   async setChannelPts(chatId: string, pts: number | null, exact: boolean): Promise<void> {
     if (exact) {
-      await this.sql`UPDATE chats SET channel_pts = ${pts} WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`
+      await this.write(() => this.sql`UPDATE chats SET channel_pts = ${pts} WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`)
       return
     }
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE chats SET channel_pts = GREATEST(COALESCE(channel_pts, 0), ${pts})
-      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`
+      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`)
   }
 
   async setGap(chatId: string): Promise<void> {
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE chats SET gap_since = COALESCE(gap_since, now())
-      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`
+      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`)
   }
 
   async maxMessageId(chatId: string): Promise<number | null> {
@@ -383,7 +447,7 @@ export class SyncStore {
     oldest: Date | null
     stopped: BackfillStop | null
   }): Promise<void> {
-    await this.sql`
+    await this.write(() => this.sql`
       UPDATE chats SET
         backfill_cursor = COALESCE(${page.cursor}, backfill_cursor),
         backfill_count = backfill_count + ${page.added},
@@ -391,7 +455,7 @@ export class SyncStore {
         backfill_stopped = ${page.stopped},
         backfill_complete = (${page.stopped}::text IS NOT DISTINCT FROM 'start'),
         updated_at = now()
-      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`
+      WHERE session_id = ${this.sessionId} AND chat_id = ${chatId}`)
   }
 
   async stopBackfill(chatId: string, reason: BackfillStop): Promise<void> {
@@ -433,14 +497,14 @@ export class SyncStore {
 
   /** Everything synced for this session. Messages go with their chats. */
   async wipe(): Promise<void> {
-    await this.sql.begin(async (tx) => {
+    await this.write(() => this.sql.begin(async (tx) => {
       await tx`DELETE FROM chats WHERE session_id = ${this.sessionId}`
       await tx`DELETE FROM users WHERE session_id = ${this.sessionId}`
       await tx`
         UPDATE sessions SET data_user_id = NULL, dialogs_synced_at = NULL,
           update_pts = NULL, update_qts = NULL, update_date = NULL, update_seq = NULL
         WHERE id = ${this.sessionId}`
-    })
+    }))
   }
 
   async listChats(take: number, skip: number): Promise<{ chats: ChatListing[], hasMore: boolean }> {
@@ -522,7 +586,7 @@ function resolveChatOps(ops: ChatOp[], existing: Set<string>): { rows: ChatRow[]
  */
 
 function mergeUsers(rows: UserRow[]): UserRow[] {
-  return fold(rows, row => row.user_id, (prev, row) => ({
+  return fold(rows, row => row.user_id, (a, b) => byId(a.user_id, b.user_id), (prev, row) => ({
     ...row,
     first_name: row.first_name ?? prev.first_name,
     phone: row.phone ?? prev.phone,
@@ -531,7 +595,7 @@ function mergeUsers(rows: UserRow[]): UserRow[] {
 }
 
 function mergeChats(rows: ChatRow[]): ChatRow[] {
-  return fold(rows, row => row.chat_id, (prev, row) => ({
+  return fold(rows, row => row.chat_id, (a, b) => byId(a.chat_id, b.chat_id), (prev, row) => ({
     ...row,
     title: row.title ?? prev.title,
     username: row.username ?? prev.username,
@@ -542,19 +606,32 @@ function mergeChats(rows: ChatRow[]): ChatRow[] {
 }
 
 function mergeMessages(rows: MessageRow[]): MessageRow[] {
-  return fold(rows, row => `${row.chat_id}:${row.message_id}`, (prev, row) => ({
+  const order = (a: MessageRow, b: MessageRow) => byId(a.chat_id, b.chat_id) || a.message_id - b.message_id
+  return fold(rows, row => `${row.chat_id}:${row.message_id}`, order, (prev, row) => ({
     ...row,
     reactions: row.reactions ?? prev.reactions,
   }))
 }
 
-/** One row per key, at the key's first position, combined in arrival order. */
-function fold<T>(rows: T[], key: (row: T) => string, combine: (prev: T, row: T) => T): T[] {
+/**
+ * One row per key, combined in arrival order, then put in key order (`order`):
+ * a statement takes its rows' locks in the order it lists them, so two writers
+ * sharing rows meet them in the same order. Sorting after the fold leaves
+ * folding as it was; rows with distinct keys write the same in any order.
+ */
+function fold<T>(rows: T[], key: (row: T) => string, order: (a: T, b: T) => number, combine: (prev: T, row: T) => T): T[] {
   const byKey = new Map<string, T>()
   for (const row of rows) {
     const k = key(row)
     const prev = byKey.get(k)
     byKey.set(k, prev === undefined ? row : combine(prev, row))
   }
-  return [...byKey.values()]
+  return [...byKey.values()].sort(order)
+}
+
+/** Numeric order of two bigint ids held as decimal strings. */
+function byId(a: string, b: string): number {
+  const x = BigInt(a)
+  const y = BigInt(b)
+  return x < y ? -1 : x > y ? 1 : 0
 }

@@ -98,6 +98,7 @@ async function prepare(): Promise<Sql> {
   try {
     const applied = await migrateAppDb(pool)
     if (applied.length) console.log(`[app-db] applied migrations: ${applied.join(', ')}`)
+    if (applied.includes(MESSAGE_AUTOVACUUM_MIGRATION)) await reportMessageAutovacuum(pool)
   }
   catch (cause) {
     console.error(
@@ -109,6 +110,37 @@ async function prepare(): Promise<Sql> {
   }
 
   return pool
+}
+
+const MESSAGE_AUTOVACUUM_MIGRATION = '0025_message_autovacuum'
+
+/**
+ * Say whether `0025_message_autovacuum` set Evolution's `"Message"` storage
+ * parameters or skipped them. The migration swallows its own failure so a boot
+ * is never held up by a table that isn't ours, and this pool silences notices,
+ * so without this a skip would leave no trace. Best effort: a failed read here
+ * says so and moves on.
+ */
+async function reportMessageAutovacuum(sql: Sql): Promise<void> {
+  try {
+    const [row] = await sql<{ exists: boolean, set: boolean }[]>`
+      SELECT to_regclass('public."Message"') IS NOT NULL AS exists,
+             COALESCE((SELECT reloptions @> ARRAY['autovacuum_vacuum_insert_scale_factor=0.01']
+                       FROM pg_catalog.pg_class
+                       WHERE oid = to_regclass('public."Message"')), false) AS set`
+    if (row?.set) console.log('[app-db] "Message" autovacuum settings applied')
+    else if (row?.exists) {
+      console.warn('[app-db] "Message" autovacuum settings skipped (this role does not own the table, or its '
+        + 'lock was busy). Apply them by hand: docs/whatsapp.md, "Vacuum \"Message\" more often".')
+    }
+    else {
+      console.log('[app-db] no "Message" table in the app database, so its autovacuum settings were not '
+        + 'applied. If Evolution uses a separate database, apply them there: docs/whatsapp.md.')
+    }
+  }
+  catch (cause) {
+    console.warn('[app-db] could not check "Message" autovacuum settings:', cause)
+  }
 }
 
 /**

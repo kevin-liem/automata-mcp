@@ -338,21 +338,23 @@ NUXT_CLOUD_URL=http://<cloud service>.railway.internal:8080   # its private addr
 NUXT_CLOUD_ADMIN_KEY=…                              # the same value as CLOUD_ADMIN_KEY
 NUXT_PUBLIC_APP_URL=https://mcp.getautomata.app
 NUXT_SIGNUP=open
-NUXT_OPS_ALERT_EMAIL=…                              # where reconnect loops on our Evolution are reported
-NUXT_REDIS_URL=redis://…/1                          # rate-limit counts shared across replicas
+NUXT_OPS_ALERT_EMAIL=…                              # where reconnect loops and stuck sessions on our Evolution are reported
+NUXT_REDIS_URL=redis://…/1                          # rate-limit counts and caches shared across replicas
 ```
 
 `NUXT_REDIS_URL` keeps the [rate limits](#rate-limits) in Redis, so they hold
 across web replicas and redeploys. Without it each replica counts on its own,
-and two replicas allow twice the budget. If Redis can't be reached, the web app
-falls back to counting in-process and logs that once a minute. Requests are
+and two replicas allow twice the budget. It also holds the short-lived chat
+listing and history-setting caches, so replicas don't each re-read them. If
+Redis can't be reached, the web app falls back to counting and caching
+in-process and logs that once a minute. Requests are
 never refused because Redis is down. If it shares a Redis with Evolution, give
 it its own database number (Evolution's cache uses `/6`). Self-hosted
 deployments don't need it.
 
 `NUXT_OPS_ALERT_EMAIL` is not about billing, but hosted mode is what makes it
-matter: with it set, a customer whose WhatsApp connection is stuck reconnecting
-is told the fix is on us and that we have been alerted. Without it they are told
+matter: with it set, a customer whose WhatsApp connection is stuck reconnecting,
+or whose session has stopped answering, is told the fix is on us and that we have been alerted. Without it they are told
 "whoever runs this deployment" has to restart Evolution, which they cannot do.
 See [alerts.md](alerts.md).
 

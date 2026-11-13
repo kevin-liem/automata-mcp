@@ -18,9 +18,13 @@
   <a href="https://railway.com/deploy/automata-or-whatsapp-telegram-sql-mcp?referralCode=HxrUPo&utm_medium=integration&utm_source=template&utm_campaign=generic"><img src="https://railway.com/button.svg" alt="Deploy on Railway"></a>
 </p>
 
-# Automata
+# Automata — PostgreSQL, WhatsApp, Telegram & Email MCP Server
 
-Automata is a free, open-source MCP server that connects AI clients such as Claude, ChatGPT and Cursor to your WhatsApp, Telegram, email and PostgreSQL, with permissions enforced chat by chat, folder by folder and table by table.
+Automata is a free, open-source PostgreSQL, WhatsApp, Telegram and email (IMAP)
+MCP server that connects Claude, ChatGPT, Cursor and other AI agents to your
+database, chats and mailbox. Every connector token is scoped table by table,
+chat by chat and folder by folder, so the AI sees only what you shared,
+whether you use the hosted version or self-host it.
 
 Many MCP servers give the AI everything the account can reach. Automata issues a
 connector token for one connection at a time and limits it to the actions,
@@ -29,13 +33,29 @@ It is for individuals and teams who want an AI assistant to read, search and
 (only if allowed) reply in their messages, mail or database. It is MIT-licensed:
 use the hosted version or run it yourself.
 
+### Why Automata: read-only and scoped by default
+
+- **PostgreSQL MCP server with table-by-table allowlists.** Every statement's
+  query plan is checked against the token's tables before a row is read;
+  queries run read-only, and writes need the `run-statement` tool granted.
+- **WhatsApp and Telegram MCP server with chat-by-chat scoping.** A token can
+  be limited to listed chats and groups; sending needs the send tool and
+  reaches only chats in scope.
+- **Read-only IMAP email access.** The AI can list, search and read mail and
+  attachments in the folders you choose. It cannot send, move, flag or delete;
+  at most it saves drafts for you to review.
+- **One token, one connection.** No tool takes an account or database
+  argument, and tokens can expire, be rotated or be revoked.
+
 [MCP tools reference](https://www.getautomata.app/docs/reference/mcp-tools) ·
 plain-text docs for AI tools: [llms.txt](https://www.getautomata.app/llms.txt),
 [llms-full.txt](https://www.getautomata.app/llms-full.txt)
 
 ## What you can connect
 
-Automata connects four kinds of account; each connection gets its own connector token.
+Automata is a PostgreSQL MCP server, a WhatsApp MCP server, a Telegram MCP
+server and an email (IMAP) MCP server in one deployment. It connects four kinds
+of account; each connection gets its own connector token.
 
 | Connector | Status | What the AI can do | How it connects | More |
 |---|---|---|---|---|
@@ -46,7 +66,10 @@ Automata connects four kinds of account; each connection gets its own connector 
 
 ## Supported AI clients
 
-Automata works with AI clients that support custom (remote) MCP connectors. These have step-by-step guides:
+The PostgreSQL MCP server, WhatsApp MCP server, Telegram MCP server and email
+MCP server work with Claude, ChatGPT, Cursor and any other AI client or agent
+that supports custom (remote) MCP connectors over streamable HTTP. These have
+step-by-step guides:
 
 - **Claude** (Claude.ai, Claude Desktop, Claude Code):
   [WhatsApp](https://www.getautomata.app/blog/how-to-connect-whatsapp-to-claude),
@@ -226,10 +249,10 @@ allow.
 ## Hosted plans
 
 [Sign up at mcp.getautomata.app](https://mcp.getautomata.app/signup). Free
-covers one connection, one connector token and one user, with only recent
-WhatsApp history imported. Pro is $19/month after a 7-day
-trial, with unlimited connections and tokens and five users included ($10/user
-after).
+covers one connection, one connector token and one user. It imports recent
+WhatsApp history and up to 90 days of Telegram history. Pro is $19/month after
+a 7-day trial, with unlimited connections and tokens and five users included
+($10/user after).
 
 ## Self-hosting
 
@@ -279,8 +302,33 @@ built from it. See [Self-hosting](docs/self-hosting.md).
 
 1. Create a connection and pair it, link it, or enter its credentials.
 2. On its dashboard, create a **connector token** and choose what it may reach.
-3. In Claude, open **Settings → Customize → Connectors → Add → Add custom connector** and paste the
-   connector URL. For Claude Code: `claude mcp add --transport http <name> <url>`.
+3. Add the connector URL to your AI client:
+   - **Claude:** open **Settings → Customize → Connectors → Add → Add custom
+     connector** and paste the connector URL. For Claude Code:
+     `claude mcp add --transport http <name> <url>`.
+   - **ChatGPT:** turn on developer mode (**Settings → Apps & Connectors →
+     Advanced settings**), create a custom connector, paste the connector URL
+     (the `/mcp/<token>` form, since ChatGPT cannot set a header) and choose no
+     authentication. Guide:
+     [ChatGPT](https://www.getautomata.app/blog/how-to-connect-chatgpt-to-whatsapp).
+   - **Cursor:** add the server to `~/.cursor/mcp.json` (or `.cursor/mcp.json`
+     in a project) and set `AUTOMATA_TOKEN` in your environment:
+
+     ```json
+     {
+       "mcpServers": {
+         "automata": {
+           "url": "https://mcp.getautomata.app/mcp",
+           "headers": {
+             "Authorization": "Bearer ${env:AUTOMATA_TOKEN}"
+           }
+         }
+       }
+     }
+     ```
+
+     Self-hosted: replace the URL with your own `https://<your-domain>/mcp`.
+
    Other clients: <https://www.getautomata.app/docs/clients>.
 
 ## Development
@@ -317,8 +365,9 @@ Local setup, networking and the Linux firewall rule are in
 
 Issues and pull requests are welcome at
 <https://github.com/ju-li/automata-mcp>. Before opening a pull request, run
-`pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck` and
-`pnpm test:emails`; these are the repository's automated checks.
+`pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck`,
+`pnpm test:emails` and `pnpm listings:check`; these are the repository's
+automated checks.
 
 ## License
 

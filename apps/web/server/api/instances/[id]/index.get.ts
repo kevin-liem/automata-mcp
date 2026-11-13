@@ -23,7 +23,8 @@
  *
  * A Telegram connection carries it too: linking
  * it now would fetch only the last `TELEGRAM_RECENT_HISTORY_DAYS` days. The
- * fact for an account already linked is the bridge's `sync.historyDays`.
+ * fact for an account already linked is the bridge's `sync.backfillDays`
+ * (`historyDays` in `get-telegram-status`).
  */
 export default defineEventHandler(async (event) => {
   const { instance } = await requireReadableInstance(event, getRouterParam(event, 'id'))

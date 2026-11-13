@@ -77,6 +77,22 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS messages_live_by_session
 If that build fails, it leaves an invalid index under the same name. Drop that
 index and build it again before you deploy.
 
+Migration `0005` sets `telegram.messages` to vacuum more often than Postgres's
+default (`autovacuum_vacuum_insert_scale_factor = 0.01`,
+`autovacuum_vacuum_scale_factor = 0.02`). The per-session counts behind each
+connection's status read only that index, but only for pages the visibility map
+marks all-visible; at the default thresholds a busy table falls behind, and the
+counts read the table instead until the status request times out. It changes
+storage parameters only and blocks neither reads nor writes. To catch up at once
+on a large table that has run without it, vacuum it by hand after deploying:
+
+```sql
+VACUUM (ANALYZE) telegram.messages;
+```
+
+`SELECT relallvisible::float / relpages FROM pg_class WHERE oid = 'telegram.messages'::regclass`
+should then stay close to 1.
+
 ## What syncs
 
 Private chats, bots, groups, supergroups (including forum topics) and channels —
@@ -134,6 +150,13 @@ seconds of the first one stopping. Run it as **one instance**, and do not give i
 a deployment overlap: while two copies run, the one without the lock reports those
 connections as held elsewhere. A short overlap is harmless — alerts wait ten
 minutes for that state — but it buys nothing.
+
+A client that stops reconnecting on its own — Telegram unreachable for longer
+than teleproto's retries, or no answer for two minutes — is rebuilt by the
+bridge without a restart. The log says
+`[sessions] <id>: client stopped reconnecting (…); rebuilding`, then
+`connected again` once it is back. Failed attempts back off from 30 seconds,
+doubling to a 10-minute cap.
 
 ## Bring your own bridge
 

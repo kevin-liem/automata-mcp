@@ -26,6 +26,7 @@ Closes #(issue_number)
 - [ ] `pnpm bridge:typecheck` passes (if `apps/telegram-bridge` changed)
 - [ ] `pnpm cloud:typecheck` passes (if `apps/cloud` changed)
 - [ ] `pnpm test:emails` passes (if account emails changed)
+- [ ] `pnpm listings:check` passes (if MCP tools or the version changed)
 
 ## 📸 Screenshots (if applicable)
 <!-- Add screenshots to help explain your changes -->

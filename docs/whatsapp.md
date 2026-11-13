@@ -93,7 +93,9 @@ with no database URL — that cached fallback is the only path.
 `"updatedAt"` is what tells a reconnect loop from a healthy connection (see
 "Stuck reconnecting" below). It has no fallback: without the grant everything
 else keeps working, the log says the column is unreadable, and loops go
-undetected.
+undetected. A stuck session (below) is then reported from the failed calls
+alone, for 30 minutes after the last one, since a reopen by Evolution can't be
+seen to clear it.
 
 ```bash
 NUXT_EVOLUTION_DATABASE_URL=postgres://wamcp_search:change-me@localhost:5432/evolution
@@ -280,6 +282,16 @@ table read for nearly every row:
 ALTER TABLE "Message" SET (autovacuum_vacuum_insert_scale_factor = 0.01,
                            autovacuum_vacuum_scale_factor = 0.05);
 ```
+
+The app applies this itself, once, in its migration `0025_message_autovacuum`,
+when `"Message"` is in the app's own database (`NUXT_DATABASE_URL`) and the
+app's role owns it — the default compose file, the all-in-one image and the
+Railway template. Otherwise it skips, never failing the boot, and the boot log
+says why (`[app-db] "Message" autovacuum settings …`). Run the statement above
+yourself when it skipped: Evolution on a separate database, a role that doesn't
+own the table, `"Message"` not created yet when the app first started, or the
+table recreated by an Evolution upgrade since. Check with
+`SELECT reloptions FROM pg_class WHERE oid = '"Message"'::regclass`.
 
 `SELECT relallvisible::float / relpages FROM pg_class WHERE oid = '"Message"'::regclass`
 should then stay close to 1.
@@ -509,12 +521,14 @@ Evolution writes on every open — marks it **Stuck** on the dashboard, and
 `get-connection-status` returns `stalled: true`. With `NUXT_OPS_ALERT_EMAIL` set
 the operator is mailed straight away; after the usual ten-minute grace,
 everyone who can reach the connection is emailed that the service needs
-restarting (see [alerts.md](alerts.md)). The record clears when a send or group
-lookup next succeeds, or when Evolution reopens the socket.
+restarting (see [alerts.md](alerts.md)). The record clears when WhatsApp next
+answers a send or a group lookup (even with a refusal), when Evolution reopens
+the socket, or when the account is next read as not `open`.
 
-Limits: it needs the message database URL (with a dedicated role, the
-`"updatedAt"` grant above) — without it a stuck session cannot be told from a
-brief drop that already recovered, and nothing is reported. `Timed Out` is not
+Limits: it needs the message database URL — without it a stuck session cannot
+be told from a brief drop that already recovered, and nothing is reported. With
+a dedicated role missing the `"updatedAt"` grant above, it is reported from the
+failed calls alone, for 30 minutes after the last one. `Timed Out` is not
 counted, since a healthy socket can answer it too. A webhook delivery never
 records anything (deliveries are unsigned). And it is found only by a call that
 needs the socket: an account nobody sends from waits for its next group lookup.

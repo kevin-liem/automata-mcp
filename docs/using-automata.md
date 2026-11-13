@@ -84,10 +84,10 @@ comes back.
 
 | Tool | Kind | | What it does |
 |---|---|---|---|
-| `get-connection-status` | WhatsApp | read | Whether the account is paired and connected (`open`); `flapping` when it reads `open` but keeps reconnecting — shown as **Unstable** on the dashboard — and `stalled` when it reads `open` but its socket was found dead — shown as **Stuck**; both fixed by restarting the Evolution service, not by Reconnect |
+| `get-connection-status` | WhatsApp | read | Whether the account is paired and connected (`open`); `flapping` when it reads `open` but keeps reconnecting — shown as **Unstable** on the dashboard — and `stalled` when it reads `open` but its socket was found dead — shown as **Stuck**; both fixed by restarting the Evolution service, not by Reconnect; `recentHistoryOnly: true` when the account's import was partial |
 | `list-chats` | WhatsApp | read | Conversations in scope, most recently active first, with the `jid` other tools take; one person stored under both a LID and a phone number is one row listing both in `jids`, and a LID chat carries `phoneNumber` when WhatsApp has revealed it; says `hasMore` when it returned one page of several. No read/unread status — WhatsApp's read state isn't available to it |
 | `read-messages` | WhatsApp | read | One chat, newest first, 1–200 per page (default 50), optional `since` / `until`; reports `hasMore`, `nextPage`, `covered` and `totalMatching`; `recentHistoryOnly: true` when the account's import was partial |
-| `search-messages` | WhatsApp | read | Messages containing every word of `query`, across chats in scope or one `jid`; optional date range and `fromMe`; up to 100 matches (default 20) |
+| `search-messages` | WhatsApp | read | Messages containing every word of `query`, across chats in scope or one `jid`; optional date range and `fromMe`; up to 100 matches (default 20); `recentHistoryOnly: true` when the account's import was partial |
 | `send-text-message` | WhatsApp | **write** | Send text to a chat's full `jid` exactly as `list-chats` / `read-messages` return it (including `…@lid` chats), or to a phone number in international format for someone with no chat yet; bare LID digits are refused; a refusal (e.g. a number not on WhatsApp) comes back with WhatsApp's reason |
 | `get-telegram-status` | Telegram | read | Whether the account is linked and online, who it is signed in as, and how far sync has got |
 | `list-telegram-chats` | Telegram | read | Synced chats in scope — private, groups, supergroups, channels — most recently active first, with the `chatId` other tools take; 1–200 per page (default 100) |
@@ -99,7 +99,7 @@ comes back.
 | `list-emails` | Email | read | Headers newest first from one folder or all in scope, 1–100 per page (default 25); filters for date, unread, flagged, attachments |
 | `search-emails` | Email | read | `from`, `to`, `subject` against synced headers and `text` through the mail server's own search; filters for date, unread, attachments; 1–100 per page (default 25) |
 | `read-email` | Email | read | One email's headers, body as plain text (fetched live, never stored) and attachment list; `maxChars` 500–100 000 (default 20 000), continued with `offset` |
-| `get-email-attachment` | Email | read | One attachment, fetched live: images as images, text as text, other files embedded — always the whole file; 10 MB cap by default |
+| `get-email-attachment` | Email | read | One attachment, fetched live: images as images, text as text, other files embedded — always the whole file; 10 MiB cap by default |
 | `create-email-draft` | Email | **write** | Saves an unsent plain-text draft in the Drafts folder, optionally threaded as a reply; never sends |
 | `get-database-info` | Postgres | read | Server version, database, connecting role, and what this token is scoped to |
 | `list-tables` | Postgres | read | Tables in scope, filterable by schema and name, paged (1–500, default 100) |
@@ -123,7 +123,7 @@ Limits and options worth knowing:
   `includeService: true`, and counts what it left out as `deletedExcluded` and
   `serviceMessagesExcluded`. A group later upgraded to a supergroup names the
   new chat in `migratedTo`.
-- `read-email` fetches at most 2 MB of a body from the mail server; anything
+- `read-email` fetches at most 2 MiB of a body from the mail server; anything
   past that is cut before `maxChars` applies.
 - `run-query` and `run-statement` take a `sql` of at most 20 000 characters.
 - Requests are rate-limited per minute: by default 120 per token, 600 per

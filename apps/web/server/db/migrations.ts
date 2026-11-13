@@ -839,4 +839,46 @@ export const APP_MIGRATIONS: AppMigration[] = [
       ALTER TABLE app.instances ADD COLUMN socket_dead_seen_at timestamptz;
     `,
   },
+  {
+    name: '0025_message_autovacuum',
+    sql: /* sql */ `
+      -- Evolution's "Message": vacuum often enough that the visibility map
+      -- stays current, so per-account counts stay index-only (#156). At the
+      -- default 20% insert threshold a freshly imported account paid a table
+      -- read for nearly every row it counted. The values production has run
+      -- since #156 (#208).
+      --
+      -- Not our table, so guarded like 0015 and never allowed to fail the
+      -- boot: skipped when it doesn't exist here (Evolution on a separate
+      -- database), when this role doesn't own it (ALTER TABLE ... SET needs
+      -- ownership), or when its lock isn't free within 5 s — an index build
+      -- or a manual VACUUM holds the same SHARE UPDATE EXCLUSIVE lock, and
+      -- appDb() answers 503 to every tenant until migrations finish. A skip
+      -- is a warning in the boot log; docs/whatsapp.md has the statement.
+      --
+      -- The lock itself blocks neither reads nor writes. lock_timeout is put
+      -- back afterwards because every pending migration shares this
+      -- transaction.
+      DO $$
+      DECLARE
+        previous text := current_setting('lock_timeout');
+      BEGIN
+        IF to_regclass('public."Message"') IS NOT NULL
+           AND pg_has_role((SELECT relowner FROM pg_class WHERE oid = to_regclass('public."Message"')), 'USAGE') THEN
+          PERFORM set_config('lock_timeout', '5s', true);
+          ALTER TABLE public."Message" SET (
+            autovacuum_vacuum_insert_scale_factor = 0.01,
+            autovacuum_vacuum_scale_factor = 0.05
+          );
+          PERFORM set_config('lock_timeout', previous, true);
+        ELSE
+          RAISE WARNING '"Message" vacuum settings skipped: table absent or not owned by %', current_user;
+        END IF;
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('lock_timeout', previous, true);
+        RAISE WARNING '"Message" vacuum settings skipped: %', SQLERRM;
+      END
+      $$;
+    `,
+  },
 ]

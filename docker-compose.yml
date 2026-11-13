@@ -85,8 +85,18 @@ services:
       NUXT_SMTP_TLS: ${SMTP_TLS:-false}
       NUXT_MAIL_FROM: ${MAIL_FROM:-}
       NUXT_MAIL_FROM_NAME: ${MAIL_FROM_NAME:-DOPE}
-      # Where reconnect loops on this deployment's Evolution are reported.
+      # Where reconnect loops and stuck sessions on this deployment's
+      # Evolution are reported.
       NUXT_OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+
+      # MCP rate limits, per minute; 0 = off. See docs/self-hosting.md
+      # "MCP rate limits".
+      NUXT_MCP_RATE_TOKEN_PER_MINUTE: ${MCP_RATE_TOKEN_PER_MINUTE:-120}
+      NUXT_MCP_RATE_ORG_PER_MINUTE: ${MCP_RATE_ORG_PER_MINUTE:-600}
+      NUXT_MCP_RATE_EXPENSIVE_PER_MINUTE: ${MCP_RATE_EXPENSIVE_PER_MINUTE:-30}
+      # Optional Redis for rate-limit counts and short-lived caches shared
+      # across replicas. Empty = kept in-process.
+      NUXT_REDIS_URL: ${REDIS_URL:-}
 
   redis:
     image: redis:8.2.9-alpine

@@ -144,7 +144,7 @@ NUXT_SMTP_PASSWORD=<password>
 NUXT_SMTP_TLS=false          # false = STARTTLS on 587; true = implicit TLS on 465
 NUXT_MAIL_FROM=<a from address the provider will accept>
 NUXT_MAIL_FROM_NAME=DOPE
-NUXT_OPS_ALERT_EMAIL=<your address>   # optional; reconnect loops on this Evolution (alerts.md)
+NUXT_OPS_ALERT_EMAIL=<your address>   # optional; reconnect loops and stuck sessions on this Evolution (alerts.md)
 
 # Checked on both Evolution's and the Telegram bridge's webhooks
 NUXT_WEBHOOK_SECRET=<openssl rand -hex 32>

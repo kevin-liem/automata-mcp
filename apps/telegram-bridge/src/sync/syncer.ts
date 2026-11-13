@@ -46,6 +46,17 @@ import { type BackfillChat, type BackfillStop, type ChatOp, SyncStore, type Trac
  * Common-sequence updates (private chats, basic groups) are never skipped:
  * teleproto's update state, which is what gets persisted, advances when an update
  * is received, not when it is applied, so a dropped one could not be fetched again.
+ *
+ * **An update that cannot be written is not dropped silently (#216).** A failed
+ * write is tried again after a pause (WRITE_RETRY_MS) — most failures are a
+ * database having a bad minute. One that still fails takes the same road as a
+ * skipped update: a channel update marks its channel dirty, and every update for
+ * it not yet applied — queued before the failure as well as after — is skipped
+ * at apply time, so the stored pts stays where the failed one would have moved
+ * it from and catch-up refetches all of it (or records a gap after
+ * MAX_CATCHUP_FAILURES). A common-sequence update cannot be refetched, so its
+ * chat gets `gap_since` where the chat is known; either way the log names the
+ * chat and message ids, never text.
  */
 
 export interface BackfillOptions {
@@ -106,6 +117,13 @@ const LONG_FLOOD_S = 300
  * (columns × rows parameters) as much as the work lost to one failed batch.
  */
 const MAX_BATCH = 500
+/**
+ * Pauses before writing a failed update (or batch) again. Bounded: the queue
+ * waits through them, so one bad row may cost seconds, never the queue.
+ */
+const WRITE_RETRY_MS = [2_000, 5_000]
+/** How many chat ids a log line about a failed batch names. */
+const LOGGED_CHATS = 10
 /** How often backfill looks again while the client is disconnected. */
 const DISCONNECTED_WAIT_MS = 30_000
 /** Telegram's answer for history this account cannot read any more. */
@@ -357,8 +375,9 @@ export class SessionSync {
         let run = 0
         while (run < this.pendingCount() && run < MAX_BATCH && batchable(this.queue[this.head + run]!.update)) run++
         const items = this.take(Math.max(run, 1))
-        if (run > 0) await this.applyBatch(items.map(item => item.update))
-        else await this.applyOne(items[0]!.update)
+        const live = this.dropSkipped(items)
+        if (run > 0) await this.applyBatch(live)
+        else if (live.length > 0) await this.applyOne(live[0]!, WRITE_RETRY_MS)
         this.release(items)
         this.overloaded()
       }
@@ -396,28 +415,109 @@ export class SessionSync {
     }
   }
 
-  private async applyOne(update: unknown): Promise<void> {
-    try {
-      await this.apply(update)
-    }
-    catch (error) {
-      const name = (update as { className?: string } | undefined)?.className ?? 'update'
-      console.error(`[sync] ${this.sessionId}: could not apply ${name}: ${describeError(error)}`)
+  /**
+   * Whether a queued channel update is to be skipped rather than applied: its
+   * channel went dirty with something skipped after it was queued (a write that
+   * failed, or shedding). Applying it would move the stored pts past what
+   * catch-up has still to fetch.
+   */
+  private skippedAtApply(item: Queued): boolean {
+    return item.channel !== undefined && this.dirty.get(item.channel) === true
+  }
+
+  /** `items` less those `skippedAtApply`, which are counted as skipped. */
+  private dropSkipped(items: Queued[]): Queued[] {
+    const live = items.filter(item => !this.skippedAtApply(item))
+    const dropped = items.length - live.length
+    this.skipped += dropped
+    this.skippedSinceReport += dropped
+    return live
+  }
+
+  /**
+   * One update, tried again after each of `retries` on failure. One that still
+   * fails is recorded (`lost`), never silently dropped. Never throws.
+   */
+  private async applyOne(item: Queued, retries: readonly number[]): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.apply(item.update)
+        return
+      }
+      catch (error) {
+        if (this.stopped) return
+        const wait = retries[attempt]
+        if (wait === undefined) return await this.lost(item, error)
+        console.warn(`[sync] ${this.sessionId}: could not apply ${describeUpdate(item.update)} (${describeError(error)}); trying again${wait > 0 ? ` in ${wait / 1000}s` : ''}`)
+        await sleep(wait)
+        if (this.stopped) return
+      }
     }
   }
 
-  private async applyBatch(updates: unknown[]): Promise<void> {
-    if (updates.length === 1) return await this.applyOne(updates[0])
-    try {
-      await this.writeBatch(updates)
-    }
-    catch (error) {
-      if (this.stopped) return
-      console.error(`[sync] ${this.sessionId}: a batch of ${updates.length} updates failed (${describeError(error)}); applying them one at a time`)
-      for (const update of updates) {
-        if (this.stopped) return
-        await this.applyOne(update)
+  /**
+   * A batch, tried again after each WRITE_RETRY_MS pause; then one update at a
+   * time, each tried once more (the pauses were spent on the batch), so one bad
+   * row costs one update, not the batch.
+   */
+  private async applyBatch(items: Queued[]): Promise<void> {
+    if (items.length === 0) return
+    if (items.length === 1) return await this.applyOne(items[0]!, WRITE_RETRY_MS)
+    let failure: unknown
+    for (let attempt = 0; attempt <= WRITE_RETRY_MS.length; attempt++) {
+      try {
+        await this.writeBatch(items.map(item => item.update))
+        return
       }
+      catch (error) {
+        if (this.stopped) return
+        failure = error
+        const wait = WRITE_RETRY_MS[attempt]
+        if (wait === undefined) break
+        console.warn(`[sync] ${this.sessionId}: a batch of ${items.length} updates ${chatsOfItems(items)} failed (${describeError(error)}); trying again${wait > 0 ? ` in ${wait / 1000}s` : ''}`)
+        await sleep(wait)
+        if (this.stopped) return
+      }
+    }
+    console.error(`[sync] ${this.sessionId}: a batch of ${items.length} updates ${chatsOfItems(items)} failed (${describeError(failure)}); applying them one at a time`)
+    for (const item of items) {
+      if (this.stopped) return
+      // An earlier one's failure may have made this one's channel dirty.
+      if (this.skippedAtApply(item)) {
+        this.skipped++
+        this.skippedSinceReport++
+        continue
+      }
+      await this.applyOne(item, [0])
+    }
+  }
+
+  /**
+   * An update that could not be written. A channel's is fetched again by
+   * catch-up: the channel is marked dirty, which also skips everything of it
+   * still queued (see `skippedAtApply`). Any other cannot be fetched again, so
+   * the loss is recorded on its chat when the update names one.
+   */
+  private async lost(item: Queued, error: unknown): Promise<void> {
+    const what = describeUpdate(item.update)
+    if (item.channel !== undefined) {
+      console.error(`[sync] ${this.sessionId}: could not apply ${what}: ${describeError(error)}; catching the channel up instead`)
+      this.markDirty(item.channel, true)
+      this.skipped++
+      this.skippedSinceReport++
+      return
+    }
+    const chatId = lostChatOf(item.update)
+    if (chatId === undefined) {
+      console.error(`[sync] ${this.sessionId}: could not apply ${what}: ${describeError(error)}; it is lost`)
+      return
+    }
+    console.error(`[sync] ${this.sessionId}: could not apply ${what}: ${describeError(error)}; recording a gap in that chat`)
+    try {
+      await this.store.setGap(chatId)
+    }
+    catch (gapError) {
+      console.error(`[sync] ${this.sessionId}: could not record the gap in ${chatId} either: ${describeError(gapError)}`)
     }
   }
 
@@ -977,6 +1077,58 @@ function channelOf(update: unknown): string | undefined {
 /** The channel pts an update brings its channel to; 0 when it carries none. */
 function ptsOf(update: unknown): number {
   return isChannelMessageUpdate(update) || update instanceof Api.UpdateDeleteChannelMessages ? update.pts : 0
+}
+
+/**
+ * The chat a common-sequence update would have written to, to record its loss
+ * on: a message's chat. A reaction count is not history, and a common deletion
+ * names no chat. Never throws.
+ */
+function lostChatOf(update: unknown): string | undefined {
+  try {
+    if (isMessageUpdate(update)) {
+      const peer = 'peerId' in update.message ? update.message.peerId : undefined
+      return peer ? markedId(peer) : undefined
+    }
+    if (update instanceof Api.UpdateShortMessage || update instanceof Api.UpdateShortChatMessage) {
+      return shortMessageRow(update, null).chat_id
+    }
+  }
+  catch {}
+  return undefined
+}
+
+/** An update for the log: its class, chat and message ids. Ids only, never text. Never throws. */
+function describeUpdate(update: unknown): string {
+  const name = (update as { className?: string } | undefined)?.className ?? 'update'
+  try {
+    if (isMessageUpdate(update)) {
+      const peer = 'peerId' in update.message ? update.message.peerId : undefined
+      return `${name} (chat ${peer ? markedId(peer) : '?'}, message ${update.message.id})`
+    }
+    if (update instanceof Api.UpdateShortMessage || update instanceof Api.UpdateShortChatMessage) {
+      return `${name} (chat ${shortMessageRow(update, null).chat_id}, message ${update.id})`
+    }
+    if (update instanceof Api.UpdateDeleteChannelMessages) {
+      return `${name} (chat ${channelChatId(update.channelId)}, messages ${update.messages.join(',')})`
+    }
+    if (update instanceof Api.UpdateDeleteMessages) return `${name} (messages ${update.messages.join(',')})`
+    if (update instanceof Api.UpdateMessageReactions) return `${name} (chat ${markedId(update.peer)}, message ${update.msgId})`
+  }
+  catch {}
+  return name
+}
+
+/** "in chats a, b, …" for a failed batch's log line: which chats to look at afterwards. */
+function chatsOfItems(items: Queued[]): string {
+  const chats = new Set<string>()
+  for (const item of items) {
+    const chat = item.channel ?? lostChatOf(item.update)
+    if (chat !== undefined) chats.add(chat)
+  }
+  if (chats.size === 0) return '(no chats)'
+  const listed = [...chats].slice(0, LOGGED_CHATS).join(', ')
+  return `in chats ${listed}${chats.size > LOGGED_CHATS ? ` and ${chats.size - LOGGED_CHATS} more` : ''}`
 }
 
 export function heapMb(): number {

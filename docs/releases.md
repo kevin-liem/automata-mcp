@@ -18,11 +18,21 @@ built by these workflows, so the release check does not catch a broken cloud
 Dockerfile; the hosted deployment builds it from source (see
 [Plans and billing](billing.md)).
 
-Each release is tagged `X.Y.Z`, `X.Y`, `X`, `latest` and `sha-<commit>`, for
-`linux/amd64`. **Point a service or a template at the major tag (`:1`), not
-`:latest`.** The web service migrates its schema at boot and migrations only go
-forward, so a major release reaching a deployment on its next restart is not
-something to opt into by accident.
+Every image is `linux/amd64`. A release reaches its tags in two steps:
+
+| Tags | Moved by | When |
+|---|---|---|
+| `X.Y.Z`, `beta`, `sha-<commit>` | `release.yml` | on merge into `prod`; the GitHub Release is a **prerelease** |
+| `X.Y`, `X`, `latest` | `promote.yml` | run by hand after testing; marks the GitHub Release latest |
+
+So `:1`, which every install pins, gets a release only after it has been tested
+as `:beta` (or `:X.Y.Z`). **Point a service or a template at the major tag
+(`:1`), not `:latest`.** The web service migrates its schema at boot and
+migrations only go forward, so a major release reaching a deployment on its next
+restart is not something to opt into by accident. For the same reason a
+deployment that ran a beta cannot simply go back to the previous image: test a
+beta on a deployment whose database you can restore, or that you are willing to
+fix forward.
 
 The version is `"version"` in the root `package.json`, always three-part. Three
 directory listings repeat it — `server.json` (official MCP Registry),
@@ -38,11 +48,28 @@ directory listings repeat it — `server.json` (official MCP Registry),
    images to prove they still build.
 3. Merge it with **Create a merge commit** — never squash, or `prod` stops being
    an ancestor of `main` and every later release PR shows old commits again.
-   The `release` workflow then pushes all three images and only after that creates
-   the `vX.Y.Z` git tag and the GitHub Release, so a tag always means its images
-   exist. Last, it publishes `server.json` to the official MCP Registry; if that
-   step fails the release still stands, and re-running the job is safe.
-4. Once the new web image is deployed, update the LobeHub listing by hand (its
+   The `release` workflow then pushes all three images as `X.Y.Z` and `beta`,
+   and only after that creates the `vX.Y.Z` git tag and a GitHub prerelease, so
+   a tag always means its images exist.
+4. Test the beta: deploy `:X.Y.Z` (or `:beta`) somewhere first — the hosted
+   deployment is the usual place — and watch it.
+5. Promote it: run the `promote` workflow from the Actions tab, or
+
+   ```bash
+   gh workflow run promote.yml -f version=X.Y.Z
+   ```
+
+   It refuses a version with no GitHub Release or one below the version already
+   promoted (migrations only go forward), then points `X.Y`, `X` and `latest` at
+   the `X.Y.Z` images — a retag, not a rebuild, so the digest is the one tested
+   — marks the GitHub Release latest, and last publishes `server.json` to the
+   official MCP Registry. If only that last step fails, the promotion stands and
+   re-running the workflow for the same version is safe.
+
+   Two releases can wait as betas; `beta` follows the newest, and promoting
+   the newer one alone is fine. Promoting the older one first, then the newer,
+   works too.
+6. Once the promoted web image is deployed, update the LobeHub listing by hand (its
    CLI logs in through a browser, so no workflow can):
 
    ```bash
@@ -55,8 +82,8 @@ directory listings repeat it — `server.json` (official MCP Registry),
 
 | Directory | File | Published by |
 |---|---|---|
-| [Official MCP Registry](https://registry.modelcontextprotocol.io) (`app.getautomata/automata`) | `server.json` | `release.yml`, every release |
-| [LobeHub Marketplace](https://lobehub.com/mcp) (`ju-li-automata-mcp`) | `lhm.plugin.json` | by hand, step 4 above |
+| [Official MCP Registry](https://registry.modelcontextprotocol.io) (`app.getautomata/automata`) | `server.json` | `promote.yml`, every promotion |
+| [LobeHub Marketplace](https://lobehub.com/mcp) (`ju-li-automata-mcp`) | `lhm.plugin.json` | by hand, step 6 above |
 | [Docker MCP Catalog](https://hub.docker.com/mcp) | `servers/automata/` in `docker/mcp-registry` | a PR there; carries no version |
 | [cursor.directory](https://cursor.directory) | `mcp.json`, `.cursor-plugin/plugin.json` | read from this repository; version set by `release:version` |
 

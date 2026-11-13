@@ -1,0 +1,167 @@
+# Promotes a released version from beta to general availability, by hand once
+# it has been tested: points X.Y, X and latest at the images release.yml pushed
+# for X.Y.Z, marks its GitHub Release as the latest, and publishes server.json
+# to the official MCP Registry.
+#
+# Retags, never rebuilds: `imagetools create` copies the manifest, so the digest
+# behind :1 is exactly the one that was tested as :X.Y.Z / :beta.
+#
+# Run from the Actions tab (or `gh workflow run promote.yml -f version=X.Y.Z`).
+# Re-running for the version already promoted is safe; promoting one below it is
+# refused, since migrations only go forward and moving :1 back would hand an
+# older web image a schema it has never seen.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Released version to promote, X.Y.Z (no leading v)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Shared with release.yml: a promotion must not interleave with a release still
+# pushing images.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      major: ${{ steps.check.outputs.major }}
+      minor: ${{ steps.check.outputs.minor }}
+    steps:
+      - id: check
+        name: Refuse a version that is not released or is below the promoted one
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! $VERSION =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            echo "::error::\"$VERSION\" is not X.Y.Z."
+            exit 1
+          fi
+          major=${BASH_REMATCH[1]}
+          minor=${BASH_REMATCH[2]}
+
+          # release.yml creates the GitHub Release only after all three images
+          # are pushed, so its existence means the images exist.
+          if ! gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            echo "::error::v$VERSION has no GitHub Release; merge it into prod first."
+            exit 1
+          fi
+
+          # The release GitHub marks Latest = the one promoted last (prereleases
+          # are never marked).
+          current=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+          if [[ -n $current ]] && [[ $(printf '%s\n%s\n' "$current" "v$VERSION" | sort -V | tail -n 1) != "v$VERSION" ]]; then
+            echo "::error::v$VERSION is below the promoted release, $current. Promotion only goes forward."
+            exit 1
+          fi
+
+          echo "Promoting v$VERSION (currently promoted: ${current:-none})" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "version=$VERSION"
+            echo "major=$major"
+            echo "minor=$minor"
+          } >> "$GITHUB_OUTPUT"
+
+  images:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        image: [automata-mcp-web, automata-mcp-telegram-bridge, automata-mcp-aio]
+    steps:
+      - id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Point X.Y, X and latest at X.Y.Z
+        env:
+          REPO: ghcr.io/${{ steps.owner.outputs.name }}/${{ matrix.image }}
+          VERSION: ${{ needs.check.outputs.version }}
+          MAJOR: ${{ needs.check.outputs.major }}
+          MINOR: ${{ needs.check.outputs.minor }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$REPO:$MAJOR.$MINOR" \
+            --tag "$REPO:$MAJOR" \
+            --tag "$REPO:latest" \
+            "$REPO:$VERSION"
+          docker buildx imagetools inspect "$REPO:$MAJOR" | head -n 3
+
+  release:
+    needs: [check, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Mark the GitHub Release as the latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          gh release edit "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease=false \
+            --latest
+
+  # The official MCP Registry entry for the hosted server (server.json), from the
+  # promoted tag so its version is the one now on :latest. Last, so a failure here
+  # leaves a complete promotion with a stale listing; re-running is safe.
+  #
+  # The name app.getautomata/* is proved by a DNS TXT record on getautomata.app;
+  # MCP_REGISTRY_DNS_KEY is the hex Ed25519 private key that record's public key
+  # belongs to. GitHub OIDC login would need no secret but only grants
+  # io.github.<owner>/*, a different listing. See docs/releases.md.
+  mcp-registry:
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.check.outputs.version }}
+
+      # Pinned and checksummed, like every image this repo builds on.
+      - name: Install mcp-publisher
+        env:
+          PUBLISHER_VERSION: v1.8.1
+          PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          rm mcp-publisher.tar.gz
+
+      - name: Publish server.json
+        env:
+          DNS_KEY: ${{ secrets.MCP_REGISTRY_DNS_KEY }}
+        run: |
+          if [ -z "$DNS_KEY" ]; then
+            echo "::error::MCP_REGISTRY_DNS_KEY is not set; the promotion is done but the MCP Registry entry is not. See docs/releases.md."
+            exit 1
+          fi
+          ./mcp-publisher login dns --domain getautomata.app --private-key "$DNS_KEY"
+          ./mcp-publisher publish server.json
+          ./mcp-publisher logout
