@@ -1,0 +1,25 @@
+name: dope-merge
+
+on:
+  pull_request:
+    branches: [dope]
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [dope]
+
+permissions:
+  contents: read
+
+jobs:
+  merge-notes:
+    if: github.event_name == 'pull_request' || github.event.created == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check main merge notes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node .github/scripts/check-dope-merge.mjs "$BASE_SHA" HEAD

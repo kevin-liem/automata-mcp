@@ -1,0 +1,7 @@
+#!/bin/sh
+
+if [ "$(git symbolic-ref --quiet HEAD)" = refs/heads/dope ] &&
+  git rev-parse --quiet --verify MERGE_HEAD >/dev/null
+then
+  exec node .github/scripts/check-dope-merge.mjs
+fi

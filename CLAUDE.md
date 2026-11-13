@@ -33,6 +33,10 @@ WhatsApp or Telegram connection that drops emails everyone who can reach it, ema
 
 Organization may hold **several** connections of any kind. Each = row in `instances`, owned by organization not person; each MCP token bound to exactly one, issued to exactly one member. See "Organizations and roles".
 
+For merges from `main` into `dope`, update the
+[branch differences and merge history](docs/main-dope-differences.md) in the
+same merge, including the incoming SHA and the decisions on deferred features.
+
 ## Commands
 
 Package manager **pnpm**, pinned `pnpm@11.22.0` via `packageManager`. No npm/yarn.
