@@ -597,6 +597,7 @@ export interface MessagePageOptions {
    * is unconditional either way.
    */
   jids?: readonly string[]
+  messageId?: string
   limit: number
   /** 1-based, counting back from the newest. */
   page: number
@@ -696,6 +697,7 @@ export async function listMessagesPage(
         FROM "Message" m
         WHERE m."instanceId" = ${instanceId}
           ${options.jids === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ANY(${[...options.jids]}::text[])`}
+          ${options.messageId === undefined ? sql`` : sql`AND m.key->>'id' = ${options.messageId}`}
           ${terms === undefined ? sql`` : bodyMatchesAll(sql, terms)}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}

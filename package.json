@@ -11,6 +11,7 @@
     "generate": "pnpm --filter web generate",
     "typecheck": "pnpm --filter web typecheck",
     "test:emails": "node --test apps/web/test/emails.test.mjs",
+    "test:media": "node --test apps/web/test/whatsapp-media.test.mjs apps/web/test/media-download.test.mjs",
     "bridge:dev": "pnpm --filter telegram-bridge dev",
     "bridge:typecheck": "pnpm --filter telegram-bridge typecheck",
     "cloud:dev": "pnpm --filter cloud dev",

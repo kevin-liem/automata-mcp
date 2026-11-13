@@ -3,11 +3,10 @@
 ## Reading and searching messages
 
 `NUXT_EVOLUTION_DATABASE_URL` is **required** for accounts on this deployment's
-Evolution server. Both `read-messages` and `search-messages` read Evolution's
-Postgres directly, and neither can answer without it — pairing, `list-chats` and
-`send-text-message` still work, and the app says so once at startup. It is the one
-part of this app that does not go through the Evolution API, for two separate
-reasons.
+Evolution server. `read-messages` and `search-messages` read Evolution's Postgres
+directly, and `get-whatsapp-media` uses it to look up the requested message.
+Pairing, `list-chats` and `send-text-message` still work without it. The app
+reports the missing setting at startup.
 
 **Searching.** Evolution 2.3.7 cannot search message content. `POST
 /chat/findMessages` accepts a `where.message` — its request schema even documents
@@ -386,6 +385,144 @@ On Railway, Evolution's Postgres is its own service — use its private URL, and
 note the port there is whatever that service actually listens on (see [Pin the
 ports](deploy-railway.md#pin-the-ports)).
 
+## Retrieving media
+
+Call `get-whatsapp-media` with the chat's `jid` and pass the message's `id` as
+`messageId`. Both values come from `read-messages` or `search-messages`. A token
+with an explicit tool allowlist must include `get-whatsapp-media`, and the chat
+must be within the token's scope.
+
+Copy the **exact ID of the audio entry**, not another message's ID or an ID
+inferred from a timestamp. `[voice message]` is a placeholder, not a transcript.
+A 422 for a non-media message identifies its stored type and directs the caller
+back to the listing; it does not mean a different recording has expired.
+
+The tool fetches one image, video, audio recording, document or sticker on
+demand, up to **10 MiB (10,485,760 decoded bytes)**. It preserves the downloaded
+bytes; it does not convert file formats. Older attachments can expire even when
+the message still appears in history. View-once media is refused.
+
+### Ordinary downloads
+
+Users can ask naturally, for example **“Unduh voice note terakhir dari Donny.”**
+The agent reads the chat and calls `get-whatsapp-media` with only `jid` and
+`messageId`. No delivery setting, chunk prompt or manual decoding is required.
+
+The default `delivery: "auto"` returns JSON text metadata containing `jid`,
+`messageId`, `filename`, `mimeType`, decoded byte `size`, whole-file `sha256`,
+`downloadUrl` and `downloadExpiresAt`. The agent presents `downloadUrl` as a
+clickable link. A supported image also has an inline preview; other files have
+an MCP `resource_link` with the same HTTPS URL, filename, MIME type and size.
+The full file downloads through HTTP with its filename and MIME headers,
+without sending base64 through the model's context.
+`HEAD` requests return the same authenticated file headers without a body;
+other HTTP methods are rejected with 405.
+
+Links last at most five minutes and grant access to **one exact attachment**.
+The original MCP bearer token is never put in the URL. Every download verifies
+the signature and rechecks the token, membership, connection, chat/tool scope
+and plan limits. Revocation, rotation or loss of access invalidates the link.
+The file's checksum must still match. Links carry file-only access while valid,
+so they should only be shared with the intended recipient.
+
+`NUXT_PUBLIC_APP_URL` must point to this app's public HTTPS origin (HTTP loopback
+is allowed for development). The endpoint is stateless across replicas and
+re-fetches the attachment on download; no media cache, new database table,
+storage service or new signing-secret setting is needed. Capability URLs are
+redacted from application error paths and responses use `Cache-Control: no-store`.
+For an expired link, the agent retrieves the attachment again for a fresh one.
+
+### Explicit native delivery
+
+Advanced clients may request `delivery: "native"`. The first content block is
+`{ "type": "text", "text": "<JSON metadata>" }`, where the metadata contains
+`jid`, `messageId`, `filename`, `mimeType`, decoded byte `size`, `delivery` and
+the complete file's `sha256`. The second
+block contains the file:
+
+| File format | MIME type | MCP content block |
+| --- | --- | --- |
+| JPEG, PNG, GIF, WebP (including WebP stickers) | `image/jpeg`, `image/png`, `image/gif`, `image/webp` | `{ "type": "image", "mimeType": "…", "data": "<base64>" }` |
+| Ogg/Opus voice notes, MP3, M4A, WAV and other audio | `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/wav`, other `audio/*` | `{ "type": "audio", "mimeType": "…", "data": "<base64>" }` |
+| MP4 and other video, including round video messages | `video/mp4`, other video MIME types | `{ "type": "resource", "resource": { "uri": "…", "mimeType": "…", "blob": "<base64>" } }` |
+| PDF, Office files, text, archives, HEIC and other formats | Original MIME type, or `application/octet-stream` when unknown | Same embedded `resource` shape |
+
+`delivery` is an optional tool argument, advertised by `tools/list` with the
+values `auto`, `native`, `file` and `base64`. `offset` and `limit` are also
+advertised for text-only chunks; only `jid` and `messageId` are required.
+For example, an audio-capable client can request the recording directly:
+
+```json
+{"jid":"<jid from read-messages>","messageId":"<exact audio entry id>","delivery":"native"}
+```
+
+`data` and `blob` are standard padded base64 strings, without a `data:` prefix.
+MIME types are lower-cased and parameters are removed: an Opus voice note
+reported as `audio/ogg; codecs=opus` is returned as `audio/ogg`, with unchanged
+Ogg bytes. Filenames are taken from Evolution, then the stored message, falling
+back to the message ID. Embedded resource URIs include the encoded filename:
+`whatsapp-media:///<jid>/<messageId>/<filename>`. They identify bytes already
+included in `blob`; they are not HTTP download URLs or a separate
+`resources/read` endpoint.
+
+An MCP bridge must forward the complete JSON-RPC response, including all
+`content` blocks, over either JSON or SSE. A 10 MiB file occupies about
+13.33 MiB in base64 before the JSON metadata. Agents can decode `data` or `blob`
+to recover the original file. Preview, playback and model understanding depend
+on the MCP client's support for that MIME type.
+
+### Advanced compatibility modes
+
+Some ChatGPT clients replace an MCP audio block with
+`<audio content omitted because you do not support audio input>`. This means
+the server downloaded the audio, but the client did not expose those bytes to
+the model. The default download link works independently of native audio support.
+
+Use `delivery: "file"` to receive an embedded `resource` for any MIME type,
+including audio. For clients that also omit embedded files, use
+`delivery: "base64"`. This mode returns **one text block only**, containing
+JSON with the metadata above plus:
+
+| Field | Meaning |
+| --- | --- |
+| `encoding` | `base64` (standard padded base64, no data-URL prefix) |
+| `data` | Base64 for this chunk of the original file |
+| `offset` | Starting offset in **decoded bytes**, initially 0 |
+| `byteLength` | Number of decoded bytes in this chunk |
+| `hasMore` | Whether more bytes remain |
+| `nextOffset` | Offset to use for the next call; present only when `hasMore` is true |
+
+Example arguments:
+
+```json
+{"jid":"<jid from read-messages>","messageId":"<exact audio entry id>","delivery":"base64","offset":0}
+```
+
+Decode each chunk **separately**, concatenate the decoded bytes in offset order,
+and save them using `filename`. Do not concatenate the base64 strings: a chunk
+may have its own padding. Keep the same `jid`, `messageId`, `size` and `sha256`
+across calls, continue with `nextOffset` until `hasMore` is false, then verify
+the assembled file's size and SHA-256. An offset at or beyond the end is refused
+with 416. The optional `limit` is a decoded-byte count: 12 KiB by default,
+48 KiB maximum. `offset` and `limit` apply only to base64 delivery.
+
+Each base64 call fetches the attachment on demand. Default download links avoid
+these repeated chunk calls for ordinary users. Base64 delivery retains the same chat/tool scope, view-once refusal and
+10 MiB whole-file limit. It provides the actual recording, not a transcript.
+An agent still needs a file/code tool to save bytes and an audio-capable tool
+to listen or transcribe. Metadata alone does not reveal the recording's words.
+
+After deploying changed tool definitions, refresh the connector once. Users
+can then keep asking naturally without specifying `delivery`, `offset` or `limit`.
+If an agent still sees only `jid`, `messageId` and `reason`, compare an
+authenticated `tools/list` response from Automata and from the bridge. Both must
+include `delivery`, `offset` and `limit`. Missing fields at Automata indicate an
+older deployment or the wrong endpoint; if only the bridge response omits them,
+check the bridge's configured upstream and deployment. When both responses
+contain the fields, refresh or reconnect the host connector and start a new
+conversation to load the updated tool schema. Deploying server code alone does not guarantee that a
+host refreshes the tool schema already loaded into a conversation.
+
 ## Chats addressed by LID (`…@lid`)
 
 WhatsApp addresses a person in one of two ways. The familiar one is a
@@ -616,8 +753,8 @@ import carries on in Evolution either way, and the dashboard counts catch up.
 
 Caveats worth knowing before you rely on it:
 
-- **Media is not downloaded.** History gives message records; the bytes still need
-  `getBase64FromMediaMessage` per message.
+- **Media is fetched on demand.** History import stores the message records.
+  Use [`get-whatsapp-media`](#retrieving-media) to fetch an available attachment.
 - **Depth is whatever the phone volunteers.** `syncFullHistory` asks for
   everything; it is not a guarantee of everything.
 - **Groups come too.** `syncFullHistory` overrides Evolution's group filter, so

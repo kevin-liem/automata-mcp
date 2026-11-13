@@ -16,7 +16,7 @@
  */
 export default defineNitroPlugin((nitroApp) => {
   nitroApp.hooks.hook('request', (event) => {
-    if (!isMcpPath(event.path)) return
+    if (!isMcpPath(event.path) && !isMediaDownloadPath(event.path)) return
 
     // Marker for any downstream logging you add.
     event.context.noLog = true
@@ -28,7 +28,7 @@ export default defineNitroPlugin((nitroApp) => {
   })
 
   nitroApp.hooks.hook('error', (error, ctx) => {
-    if (!isMcpPath(ctx.event?.path)) return
+    if (!isMcpPath(ctx.event?.path) && !isMediaDownloadPath(ctx.event?.path)) return
 
     if (ctx.event) {
       ctx.event._path = redactPath(ctx.event._path)

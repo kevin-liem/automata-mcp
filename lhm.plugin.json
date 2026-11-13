@@ -208,6 +208,63 @@
       }
     },
     {
+      "name": "get-whatsapp-media",
+      "title": "Get WhatsApp media",
+      "description": "[WhatsApp] Download one image, video, audio recording, document or sticker from an in-scope WhatsApp chat. Choose the optional `delivery` mode: \"auto\" (default) for a download link, \"native\" for inline MCP image/audio, \"file\" for an embedded file, or \"base64\" for text-only byte chunks. Copy the chat `jid` and exact message `id` as `messageId` from read-messages or search-messages; do not infer an ID from a timestamp. For ordinary download requests, pass only jid and messageId. The default returns a temporary downloadUrl and file metadata; present downloadUrl as a clickable download link. Image previews are included when supported. The link expires after five minutes; call this tool again for a fresh link. Files over 10 MiB are refused. Use delivery: \"native\" when the client needs image/audio content directly; video and other formats remain embedded files. If a client needs bytes through text only, use `delivery: \"base64\"`: it returns the actual file bytes as a bounded base64 chunk in JSON text, with metadata and a SHA-256 checksum. Repeat with `nextOffset` until `hasMore` is false, decode each chunk separately, then concatenate the decoded bytes to save the file. `delivery: \"file\"` returns an embedded file instead of native image/audio. Downloading audio does not transcribe it. Older attachments may have expired from WhatsApp.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The full chat JID, exactly as returned by read-messages or search-messages"
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Copy the exact id from the desired media entry in read-messages or search-messages"
+          },
+          "delivery": {
+            "default": "auto",
+            "description": "How to return the attachment: auto = temporary download link and supported image preview (default); native = inline MCP image/audio, with other formats embedded as resources; file = embedded resource for any format; base64 = text-only byte chunks using offset/limit. Native audio depends on client support.",
+            "type": "string",
+            "enum": [
+              "auto",
+              "native",
+              "file",
+              "base64"
+            ]
+          },
+          "offset": {
+            "default": 0,
+            "description": "For base64 delivery only: decoded byte offset, starting at 0; use nextOffset to continue",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "limit": {
+            "default": 12288,
+            "description": "For base64 delivery only: maximum decoded bytes in this chunk, default 12 KiB and maximum 48 KiB",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 49152
+          }
+        },
+        "required": [
+          "jid",
+          "messageId"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
       "name": "list-chats",
       "title": "List WhatsApp chats",
       "description": "[WhatsApp] List recent WhatsApp conversations, most recently active first, with the `jid` needed by read-messages. Includes conversations imported from the phone when the account was paired, not only ones active since. If this connector is scoped to specific chats, only those are listed. This answers with one page, most recently active first: when `hasMore` is true there are older conversations it did not include, so do not report the list as complete or conclude that a chat does not exist — search-messages finds a conversation by what was said in it.",
@@ -405,14 +462,14 @@
     {
       "name": "read-messages",
       "title": "Read WhatsApp messages",
-      "description": "[WhatsApp] Read one page of messages from one WhatsApp conversation, newest first. Takes the `jid` returned by list-chats. Covers the history imported when the account was paired as well as everything since, so older conversations are reachable — use `since`/`until` to target a date range. A response is one page, not the whole range: when `hasMore` is true there are older messages you have not seen, so call again with `nextPage` and the same `jid`, `limit` and `window` bounds, and keep going until `hasMore` is false before treating the range as fully read. `covered` reports the span this page actually covers, which for a truncated range is narrower than the one you asked for, and `totalMatching`/`totalPages` say how much the range holds in full — a count of distinct messages, safe to quote. A message you sent is marked `fromMe` and carries no `author`; on one you received, `author` is the sender's name where the account knows it, and absent where it does not. Reaction messages are left out unless `includeReactions` is set. @-mentions in the text are shown as names where the account knows them, and left as raw numeric ids where it does not — an id is not a name to guess at. An edited message arrives as its own record carrying the new text, with `editOf` naming the message it replaces; that earlier record is still in the history with the text it had before, so read the pair as one message that changed rather than as two. WhatsApp's own control records — deletions, disappearing-message timer changes, key exchanges — carry nothing to read and are left out, counted by `protocolMessagesExcluded` when any were, and still included in `totalMatching`. An edit that WhatsApp encrypted for the chat's participants comes back with no text and `unreadable: 'encrypted-edit'`: the current wording of that message is unknown here, so report it as unknown rather than treating the earlier version as final. To find a message by what it says, prefer search-messages when this connector offers it.",
+      "description": "[WhatsApp] Read one page of messages from one WhatsApp conversation, newest first. Takes the `jid` returned by list-chats. Covers the history imported when the account was paired as well as everything since, so older conversations are reachable — use `since`/`until` to target a date range. When the response carries `recentHistoryOnly: true`, that import was partial — only the recent history WhatsApp hands a newly linked device — so the oldest message here is not necessarily where the conversation began; say so rather than treating it as the start. A response is one page, not the whole range: when `hasMore` is true there are older messages you have not seen, so call again with `nextPage` and the same `jid`, `limit` and `window` bounds, and keep going until `hasMore` is false before treating the range as fully read. `covered` reports the span this page actually covers, which for a truncated range is narrower than the one you asked for, and `totalMatching`/`totalPages` say how much the range holds in full — a count of distinct messages, safe to quote. A message you sent is marked `fromMe` and carries no `author`; on one you received, `author` is the sender's name where the account knows it, and absent where it does not. Reaction messages are left out unless `includeReactions` is set. @-mentions in the text are shown as names where the account knows them, and left as raw numeric ids where it does not — an id is not a name to guess at. An edited message arrives as its own record carrying the new text, with `editOf` naming the message it replaces; that earlier record is still in the history with the text it had before, so read the pair as one message that changed rather than as two. One person can be stored under two ids — a `@lid` and their phone number; when this connector has linked them, reading either id returns both halves, merged into one timeline, and `jids` lists what was read. `linkedOutOfScope` means part of this person's conversation is under an id this token may not read; `linkUnknown` means another part may exist that this connector cannot link. Say so rather than presenting the page as the whole conversation. WhatsApp's own control records — deletions, disappearing-message timer changes, key exchanges — carry nothing to read and are left out, counted by `protocolMessagesExcluded` when any were, and still included in `totalMatching`. An edit that WhatsApp encrypted for the chat's participants comes back with no text and `unreadable: 'encrypted-edit'`: the current wording of that message is unknown here, so report it as unknown rather than treating the earlier version as final. To find a message by what it says, prefer search-messages when this connector offers it. `[voice message]` is an audio placeholder, not a transcript. To download it, copy that exact entry's `id` to get-whatsapp-media as `messageId`; do not infer it from another entry or timestamp. For a download request, call get-whatsapp-media with only jid and messageId and show its downloadUrl as a clickable link. Do not ask the user to choose delivery modes or provide technical prompts.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "jid": {
             "type": "string",
             "minLength": 1,
-            "description": "Chat identifier from list-chats, e.g. 5511999999999@s.whatsapp.net"
+            "description": "Chat identifier from list-chats, exactly as returned, e.g. 5511999999999@s.whatsapp.net or 79972425314508@lid"
           },
           "limit": {
             "default": 50,

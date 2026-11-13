@@ -229,6 +229,11 @@ allow.
 
 ## Other features
 
+- **Twenty-three MCP tools.** Check status, list chats, read and search messages,
+  fetch WhatsApp media and send text. List, search and read email, fetch
+  attachments and save drafts. List and describe tables, run queries and write
+  statements when granted. See
+  [the tool list](docs/using-automata.md#mcp-tools).
 - **History, not just new messages.** Recent WhatsApp history is imported
   when a number is paired, full history on request; Telegram chats are synced and backfilled; email headers are
   synced while bodies and attachments are fetched live and never stored.

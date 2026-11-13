@@ -1,13 +1,14 @@
 # Main and DOPE branch differences
 
 The initial comparison covered upstream `main` at `5a0d442` and `dope` at
-`d213038`. See the latest entry in [merge history](#merge-history) for the
+`d213038`. See the latest Main entry in [merge history](#merge-history) for the
 reviewed upstream tip. Use `git diff origin/main dope` to compare branch contents.
 
 ## Current differences
 
 | Area | Main | DOPE |
 | --- | --- | --- |
+| WhatsApp media | WhatsApp tools read and search message records and send text. | Also includes `dev`'s `get-whatsapp-media` tool: scoped, size-capped attachment retrieval with five-minute download links, live authorization, and explicit native, file or base64 delivery. |
 | Tool-call history | Hosted Free requires recording, including after a downgrade to Free. On Pro and self-hosted deployments, an admin can opt in from the Organization page. | Recording starts off on every plan. An organization admin can explicitly enable it through `PATCH /api/org` with `recordToolCalls: true`. The Organization page omits the switch. The legacy `tool_calls_required` field is cleared by the cloud service. |
 | PostHog | Hosted browser analytics collect pageviews and connection and token events when `NUXT_PUBLIC_POSTHOG_KEY` is configured. | The PostHog integration is deferred. |
 | Brevo | The hosted contact sync includes the last MCP use date for the member and their organization when telemetry is enabled. | DOPE retains the existing hosted contact sync. The two MCP activity dates are deferred. |
@@ -71,6 +72,15 @@ review its upstream patch with `git show <commit>` and port it as a new change.
 Update this page in the same change when a deferred feature is adopted later.
 
 ## Merge history
+
+### Dev `6810135dafd2f36b87139a14ccf65c78c570db16`
+
+- **2026-11-13.** Added WhatsApp media retrieval, signed download links bound
+  to current connector credentials, GET/HEAD downloads, media tests, and
+  `AGENTS.md`.
+- Kept indexed message search alongside the new exact-message lookup filter,
+  newer status and LID documentation, DOPE branding, the sign-in email lock,
+  opt-in tool-call history, and the deferred PostHog and Brevo activity dates.
 
 ### Main `5a0d442f58e0d3060db3bcfdace12ec3f0b82d4a`
 

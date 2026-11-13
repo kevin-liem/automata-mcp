@@ -22,9 +22,9 @@ App's own data (users, sessions, organizations, connections + credentials, token
 
 `README.md` = public landing page (logo, links, screenshots, features, quick start) — keep short. Operator's manual lives in `docs/`: `self-hosting.md` (root `docker-compose.yml` + `.env.selfhost.example`, published images), `deploy-railway.md`, `development.md` (local setup, networking tables, Linux firewall rule), `whatsapp.md`, `telegram.md`, `postgres.md`, `imap.md`, `alerts.md`, `two-factor.md`, `using-automata.md`, `releases.md`, `billing.md`; `docs/README.md` indexes them. Read before anything involving Docker or local stack; this file covers code. Two compose files: `docker-compose.dev.yml` = services only for dev; `docker-compose.yml` = full self-host stack, separate project name `automata`. Third self-host path: `docker/aio/` = all-in-one image, everything in one container — see "All-in-one image".
 
-**Status:** product loop works end to end for all four kinds — sign up (creates organization), invite colleagues, create connection, pair by QR (importing number's WhatsApp history as it connects), link Telegram by QR, or paste DSN, per-connection dashboard, assign connections to members, connector token provisioning with per-chat, per-folder or per-table scoping. Twenty-two MCP tools, gated by kind:
+**Status:** product loop works end to end for all four kinds — sign up (creates organization), invite colleagues, create connection, pair by QR (importing number's WhatsApp history as it connects), link Telegram by QR, or paste DSN, per-connection dashboard, assign connections to members, connector token provisioning with per-chat, per-folder or per-table scoping. Twenty-three MCP tools, gated by kind:
 
-- `whatsapp`: `get-connection-status`, `list-chats`, `read-messages`, `search-messages`, `send-text-message`
+- `whatsapp`: `get-connection-status`, `list-chats`, `read-messages`, `search-messages`, `get-whatsapp-media`, `send-text-message`
 - `telegram`: `get-telegram-status`, `list-telegram-chats`, `read-telegram-messages`, `search-telegram-messages`, `send-telegram-message`
 - `postgres` (the `sql/` group): `get-database-info`, `list-tables`, `describe-table`, `run-query`, `run-statement` (write)
 - `imap`: `get-mailbox-status`, `list-mail-folders`, `list-emails`, `search-emails`, `read-email`, `get-email-attachment`, `create-email-draft` (write)
@@ -55,12 +55,13 @@ pnpm cloud:typecheck  # the cloud service; not covered by `pnpm typecheck` eithe
 pnpm dev              # Nuxt on the host, http://localhost:3000
 pnpm typecheck        # nuxt typecheck across app + server
 pnpm test:emails      # account-email snapshots and rendering checks
+pnpm test:media       # WhatsApp media bytes, MCP formats, scope and size limits
 pnpm build            # production build -> apps/web/.output/
 pnpm listings:check   # directory listings agree with package.json version + tool names
 pnpm services:down / :logs / :ps
 ```
 
-Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services up yourself. There is no lint config or test framework. The automated checks are `pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck` and `pnpm test:emails`.
+Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services up yourself. There is no lint config or test framework. The automated checks are `pnpm typecheck`, `pnpm bridge:typecheck`, `pnpm cloud:typecheck`, `pnpm test:emails` and `pnpm test:media`.
 
 ## Environment
 
@@ -291,6 +292,20 @@ Rules easy to undo:
 - Ids only in Redis and log — no args, no `reason`.
 
 ## Credential rules that are easy to break later
+
+**WhatsApp media downloads:** `get-whatsapp-media` defaults to `delivery: auto`:
+five-minute file-only HTTPS links plus metadata; image previews stay inline.
+`whatsapp-media.ts` is the shared scoped/size-capped downloader for the tool and
+`api/media/whatsapp/[grant].ts` (GET/HEAD only). Grants are signed with a domain-separated
+HMAC over the token ID, chat, message, checksum and expiry, keyed by the stored
+token hash. `resolveMediaDownloadAuth` verifies the grant before using the same
+live authorization path as MCP; tool/chat scope and plan limits are checked on
+GET too. Never put the raw MCP token in a file link, skip current authorization,
+or log the grant path. Link creation must match `auth.credentialHash` against the
+current active token so an in-flight pre-rotation call cannot sign with the new
+credential. Rotation changes the signing key. No media is persisted.
+Native, embedded-file and bounded base64 modes remain explicit compatibility
+options; ordinary users must not need format/offset prompts.
 
 **No global-key fallback in per-instance credentials.** `credentialsForInstance()` returns `undefined` when instance has no `api_key`; callers must fail. Global-key fallback hands any MCP token holder *every* account on that Evolution server. Global keys have exactly two callers, both in `server/utils/instances.ts`: create and delete.
 
