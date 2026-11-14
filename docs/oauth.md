@@ -73,6 +73,11 @@ including the existing sign-in and MFA steps when needed. Choose your token
 policy and allow access. All users use the same URL; their authorizations select
 different connections and permissions.
 
+Each selection shows the account type and saved connection label, such as
+**WhatsApp - Work Phone**, followed by **Connector name: Codex** and its allowed
+tools. Unnamed connections show only their account type. Chat, folder, and
+table restrictions continue to be enforced by the selected connector token.
+
 The module provides OAuth authorization-code flow with mandatory S256 PKCE,
 client metadata documents, and dynamic client registration. It supports public
 clients and confidential clients using `client_secret_basic` or
@@ -105,9 +110,10 @@ from the agent after resolving the error.
 
 - Approval links last 10 minutes from starting the agent connection, including
   time spent signing in and reviewing token policies. The consent page shows
-  its exact deadline in GMT. An expired, used, or unavailable approval link
-  requires a new connection attempt from the agent. A form that cannot be
-  verified offers a reload instead of claiming the approval expired.
+  its exact deadline in the device's local timezone and language, with a GMT
+  fallback when JavaScript is disabled. An expired, used, or unavailable
+  approval link requires a new connection attempt from the agent. A form that
+  cannot be verified offers a reload instead of claiming the approval expired.
 - Authorization codes last two minutes after approval and can be used once.
 - Access tokens last one hour. Refresh tokens rotate on use; replaying an old
   refresh token revokes its grant. An authorization lasts at most 30 days.
@@ -167,6 +173,9 @@ form navigations send `Origin: null`, which the CSRF origin check must reject.
 Expected approval errors render module-owned HTML, avoiding Nuxt error
 hydration that could replace the browser location with a redacted diagnostic
 URL. OAuth URLs remain redacted in server error reporting.
+
+The HTML helper authorizes only its fixed local-time formatter script through
+a CSP hash. Keep that script independent of user-supplied labels and metadata.
 
 ## Tests
 

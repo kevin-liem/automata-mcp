@@ -4,7 +4,7 @@ import type { H3Event } from 'h3'
 import type { AppUser } from '../../../server/utils/app-db'
 import { AUTHORIZE_PATH, CONNECTIONS_PATH, INTERACTION, MCP_SCOPE, METADATA_PATHS, PROTECTED_METADATA_PATH, RESUME } from '../shared'
 import { csrfToken, matchesToken } from './crypto'
-import { escapeHtml, page, scopeSummary } from './pages'
+import { connectionTitle, escapeHtml, page, toolsSummary } from './pages'
 import { PROVIDER_SESSION_COOKIE } from './service'
 import type { OAuthService } from './service'
 
@@ -65,7 +65,7 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
       }
       const authorizations = await service.authorizations(user.id)
       const entries = authorizations.map(row => `<section><h2>${escapeHtml(row.client_name)}</h2>
-        <p>${escapeHtml(row.connection_name)} · ${escapeHtml(row.label || 'Untitled token')}</p>
+        <p>${escapeHtml(connectionTitle(row.kind, row.connection_name))}<br>Connector name: ${escapeHtml(row.label.trim() || 'Unnamed connector')}</p>
         <small>Client: ${escapeHtml(row.client_id)}</small>
         <form method="post" action="${CONNECTIONS_PATH}">
           <input type="hidden" name="id" value="${escapeHtml(row.id)}"><input type="hidden" name="csrf" value="${csrf('revoke', row.id)}">
@@ -124,8 +124,9 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
     const choices = await service.choices(user.id)
     const deadline = new Date(details.exp * 1000)
     const options = choices.map(({ row, auth }, index) => `<label><input type="radio" name="token" value="${escapeHtml(row.id)}" ${index === 0 ? 'checked' : ''} required>
-      <strong>${escapeHtml(row.connection_name)} · ${escapeHtml(row.label || 'Untitled token')}</strong><br>
-      <small>${escapeHtml(scopeSummary(auth))}${auth.sendDisclaimer ? `<br>Message footer: ${escapeHtml(auth.sendDisclaimer)}` : ''}</small></label>`).join('')
+      <strong>${escapeHtml(connectionTitle(row.kind, row.connection_name))}</strong><br>
+      <small>Connector name: ${escapeHtml(row.label.trim() || 'Unnamed connector')}</small><br>
+      <small>${escapeHtml(toolsSummary(auth))}</small></label>`).join('')
     return page(event, 'Authorize agent access', `<section><p><strong>${escapeHtml(clientName)}</strong> is requesting access to one connection.</p>
       <p>Signed in as <strong>${escapeHtml(user.email)}</strong>.<br>Returns to <strong>${escapeHtml(new URL(redirectUri).host)}</strong>.</p>
       <p>Approve only if you started this connection from that app. Access follows the selected token’s permissions and expiry.</p>

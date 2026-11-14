@@ -1,6 +1,22 @@
+import { createHash } from 'node:crypto'
 import { setHeader, setResponseStatus } from 'h3'
 import type { H3Event } from 'h3'
 import type { McpAuth } from '../../../server/utils/mcp-auth'
+import type { InstanceKind } from '../../../shared/connection'
+
+// Only the device knows its timezone. Keep this fixed script independent of
+// user data so the CSP can authorize its exact hash, without unsafe-inline.
+const LOCAL_TIME_SCRIPT = `
+const formatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long' });
+for (const time of document.querySelectorAll('time[datetime]')) {
+  time.textContent = formatter.format(new Date(time.dateTime));
+  time.title = formatter.resolvedOptions().timeZone;
+}
+`
+const LOCAL_TIME_HASH = createHash('sha256').update(LOCAL_TIME_SCRIPT).digest('base64')
+const ACCOUNT_NAMES: Record<InstanceKind, string> = {
+  whatsapp: 'WhatsApp', telegram: 'Telegram', imap: 'Email (IMAP)', postgres: 'PostgreSQL',
+}
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
@@ -9,7 +25,7 @@ export function escapeHtml(value: unknown): string {
 export function page(event: H3Event, title: string, body: string, status = 200): string {
   setResponseStatus(event, status)
   setHeader(event, 'content-type', 'text/html; charset=utf-8')
-  setHeader(event, 'content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+  setHeader(event, 'content-security-policy', `default-src 'none'; script-src 'sha256-${LOCAL_TIME_HASH}'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`)
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${escapeHtml(title)}</title><style>
     *{box-sizing:border-box}body{margin:0;background:#f4f1e8;color:#282820;font:16px/1.6 system-ui,sans-serif}
@@ -18,14 +34,15 @@ export function page(event: H3Event, title: string, body: string, status = 200):
     button{font:inherit;cursor:pointer;border:1px solid #282820;border-radius:6px;padding:8px 18px;margin:8px 8px 0 0;background:#282820;color:#fffdf7}
     button.secondary{background:transparent;color:#282820}fieldset{border:0;padding:0}label{display:block;cursor:pointer;border-top:1px solid #dedbd0;padding:16px 0}
     ul{padding-left:22px}code{overflow-wrap:anywhere}input[type=radio]{accent-color:#282820}
-    </style></head><body><main><a href="/instances">← DOPE</a><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`
+    </style></head><body><main><a href="/instances">← DOPE</a><h1>${escapeHtml(title)}</h1>${body}</main><script>${LOCAL_TIME_SCRIPT}</script></body></html>`
 }
 
-export function scopeSummary(auth: McpAuth): string {
+export function connectionTitle(kind: InstanceKind, label: string): string {
+  const name = label.trim()
+  return ACCOUNT_NAMES[kind] + (name ? ` - ${name}` : '')
+}
+
+export function toolsSummary(auth: McpAuth): string {
   const scope = auth.scope
-  const tools = scope.allTools ? 'All tools' : scope.toolNames.join(', ')
-  const resources = auth.kind === 'postgres'
-    ? (scope.allTables ? 'All tables' : scope.tableNames.join(', '))
-    : (scope.allChats ? (auth.kind === 'imap' ? 'All folders' : 'All chats') : scope.chatJids.join(', '))
-  return `${tools || 'No tools'} · ${resources || 'No resources'}`
+  return scope.allTools ? 'All tools' : scope.toolNames.join(', ') || 'No tools'
 }

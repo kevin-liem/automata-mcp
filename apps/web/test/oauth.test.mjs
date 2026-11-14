@@ -203,7 +203,9 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
     await db`INSERT INTO app.users (id, email, password_hash) VALUES ('alice', 'alice@example.test', 'test'), ('bob', 'bob@example.test', 'test'), ('member', 'member@example.test', 'test')`
     await db`INSERT INTO app.organizations (id, name) VALUES ('org-a', 'Alice Org'), ('org-b', 'Bob Org')`
     await db`INSERT INTO app.memberships (org, user_id, role) VALUES ('org-a', 'alice', 'admin'), ('org-b', 'bob', 'admin'), ('org-a', 'member', 'member')`
-    await db`INSERT INTO app.instances (id, org, kind, name, dsn) VALUES ('connection-a', 'org-a', 'postgres', 'Alice Database', 'postgresql://example.invalid/a'), ('connection-b', 'org-b', 'postgres', 'Bob Database', 'postgresql://example.invalid/b')`
+    await db`INSERT INTO app.instances (id, org, kind, name, label, dsn)
+      VALUES ('connection-a', 'org-a', 'postgres', 'Alice Database', 'Primary database', 'postgresql://example.invalid/a'),
+        ('connection-b', 'org-b', 'postgres', 'Bob Database', 'Other database', 'postgresql://example.invalid/b')`
     await db`INSERT INTO app.instance_assignments (instance, user_id) VALUES ('connection-a', 'member')`
     const native = 'wamcp_test_alice_private_credential'
     const memberNative = 'wamcp_test_member_private_credential'
@@ -346,6 +348,49 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
       assert.equal(interaction.exp - interaction.iat, 600)
       assert.ok(html.includes(new Date(interaction.exp * 1000).toISOString()))
       assert.match(html, /This approval link expires at/)
+      const localTimeScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+      assert.ok(localTimeScript, 'the device must format its own local deadline')
+      const scriptHash = createHash('sha256').update(localTimeScript).digest('base64')
+      const policy = consent.headers.get('content-security-policy')
+      assert.ok(policy.includes(`script-src 'sha256-${scriptHash}'`), 'only the fixed local-time script is allowed to execute')
+      assert.ok(!/script-src[^;]*unsafe-inline/.test(policy))
+    })
+    await t.test('consent uses the saved connection label and connector name, with tools but no chat list', async () => {
+      const hiddenChat = '6281234567890@s.whatsapp.net'
+      const internalName = 'i-auto-generated-work-phone'
+      await db`INSERT INTO app.instances (id, org, kind, name, label, instance_id, api_key, base_url)
+        VALUES ('ui-work-phone', 'org-a', 'whatsapp', ${internalName}, 'Work Phone', 'test-session', 'test-key', 'https://example.invalid')`
+      await db`INSERT INTO app.mcp_tokens (id, assigned_to, instance, label, token_hash, all_chats, chat_jids, all_tools, tool_names)
+        VALUES ('ui-work-policy', 'alice', 'ui-work-phone', 'Codex', ${hashMcpToken('wamcp_ui_work_phone')}, false, ${[hiddenChat]}, false, ${['list-chats', 'read-messages']})`
+      try {
+        const who = browser('alice')
+        const { response } = await start(who)
+        const path = new URL(location(response), origin).pathname
+        const html = await (await who.fetch(path)).text()
+        assert.match(html, /WhatsApp - Work Phone/)
+        assert.match(html, /Connector name: Codex/)
+        assert.match(html, /list-chats, read-messages/)
+        assert.ok(!html.includes(internalName))
+        assert.ok(!html.includes(hiddenChat))
+        assert.ok(!html.includes('All chats'))
+        assert.ok(!html.includes('All tables'))
+        const choice = (await service.choices('alice')).find(choice => choice.row.id === 'ui-work-policy')
+        assert.equal(choice.row.connection_name, 'Work Phone')
+        assert.equal(choice.auth.scope.allChats, false)
+        assert.deepEqual(choice.auth.scope.chatJids, [hiddenChat], 'hidden chat restrictions must remain enforced')
+        await db`UPDATE app.instances SET label = '' WHERE id = 'ui-work-phone'`
+        const unnamed = await (await who.fetch(path)).text()
+        assert.match(unnamed, /<strong>WhatsApp<\/strong>/)
+        assert.ok(!unnamed.includes(internalName), 'missing display labels must never fall back to internal names')
+        await db`UPDATE app.instances SET label = 'Work <script>injected()</script>' WHERE id = 'ui-work-phone'`
+        const escaped = await (await who.fetch(path)).text()
+        assert.ok(escaped.includes('Work &lt;script&gt;injected()&lt;/script&gt;'))
+        assert.ok(!escaped.includes('<script>injected()</script>'))
+      }
+      finally {
+        await db`DELETE FROM app.mcp_tokens WHERE id = 'ui-work-policy'`
+        await db`DELETE FROM app.instances WHERE id = 'ui-work-phone'`
+      }
     })
     await t.test('Gemini DCR, Codex CIMD with ephemeral localhost port, and Claude CIMD complete the flow', async () => {
       for (const agent of [gemini, codex, claude]) {
@@ -681,6 +726,8 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
         const managementHtml = await management.text()
         assert.match(managementHtml, /Connected agents/)
         assert.match(managementHtml, /← DOPE/)
+        assert.match(managementHtml, /PostgreSQL - Primary database/)
+        assert.match(managementHtml, /Connector name: Alice policy/)
         const refused = browser('alice')
         const pending = await start(refused, agent)
         const approvalPath = new URL(location(pending.response), origin).pathname

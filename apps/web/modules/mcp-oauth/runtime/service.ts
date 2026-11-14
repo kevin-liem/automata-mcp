@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import Provider, { errors } from 'oidc-provider'
 import type { Sql } from 'postgres'
 import type { McpAuth } from '../../../server/utils/mcp-auth'
+import type { InstanceKind } from '../../../shared/connection'
 import { AUTHORIZE_PATH, INTERACTION_PATH, MCP_SCOPE } from '../shared'
 import type { OAuthConfig } from './config'
 import { fetchClientMetadata } from './metadata'
@@ -37,7 +38,7 @@ interface TokenChoice {
   id: string
   label: string
   connection_name: string
-  kind: string
+  kind: InstanceKind
   token_hash: string
 }
 
@@ -151,10 +152,10 @@ export async function createOAuthService(
 
   async function choices(userId: string) {
     const rows = await storage(() => db<TokenChoice[]>`
-      SELECT t.id, t.label, t.token_hash, i.name AS connection_name, i.kind
+      SELECT t.id, t.label, t.token_hash, i.label AS connection_name, i.kind
       FROM app.mcp_tokens t JOIN app.instances i ON i.id = t.instance
       WHERE t.assigned_to = ${userId} AND NOT t.revoked AND (t.expires_at IS NULL OR t.expires_at > now())
-      ORDER BY i.name, t.label, t.id
+      ORDER BY i.label, t.label, t.id
     `)
     const choices = await Promise.all(rows.map(async row => {
       const auth = await resolveHash(row.token_hash, { recordUse: false })
@@ -189,8 +190,8 @@ export async function createOAuthService(
   }
 
   async function authorizations(userId: string) {
-    const rows = await storage(() => db<(Authorization & { label: string, connection_name: string })[]>`
-      SELECT a.id, a.client_id, a.client_name, a.grant_id, t.label, i.name AS connection_name
+    const rows = await storage(() => db<(Authorization & { label: string, connection_name: string, kind: InstanceKind })[]>`
+      SELECT a.id, a.client_id, a.client_name, a.grant_id, t.label, i.label AS connection_name, i.kind
       FROM mcp_oauth.authorizations a
       JOIN app.mcp_tokens t ON t.id = a.token_id
       JOIN app.instances i ON i.id = t.instance
