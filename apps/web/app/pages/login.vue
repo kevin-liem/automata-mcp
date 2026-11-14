@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { startAuthentication } from '@simplewebauthn/browser'
 import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
+import { oauthReturnPath } from '~~/modules/mcp-oauth/shared'
 
 /**
  * Two steps on one page. The password step signs in an account with no second
@@ -30,6 +31,8 @@ const code = ref('')
 
 async function finish() {
   await refresh()
+  const destination = oauthReturnPath(route.query.oauth_return)
+  if (destination) return await navigateTo(destination, { external: true })
   await navigateTo('/instances')
 }
 

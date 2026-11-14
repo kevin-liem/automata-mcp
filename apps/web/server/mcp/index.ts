@@ -1,3 +1,5 @@
+import { authenticateMcpRequest } from '../../modules/mcp-oauth/runtime/runtime'
+
 /**
  * Default MCP handler. Applies to both routes:
  *
@@ -11,13 +13,8 @@
  */
 export default defineMcpHandler({
   middleware: async (event, next) => {
-    const auth = await resolveMcpAuth(event)
-
-    if (!auth) {
-      // 401 + WWW-Authenticate. Never 200-with-an-error-body: to a client that
-      // reads like a tool that ran and declined.
-      return mcpUnauthorized()
-    }
+    const auth = await authenticateMcpRequest(event)
+    if (auth instanceof Response) return auth
 
     // A valid credential beyond its organization's limits: 403, never 401,
     // since it works again the moment the limits rise. No limits — every

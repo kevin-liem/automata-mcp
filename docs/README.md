@@ -12,6 +12,7 @@ here are about running and developing this repository.
 
 **Using it**
 
+- [Agent OAuth](oauth.md) — optional built-in OAuth for Codex, Gemini and Claude; setup, revocation, and maintaining the module across upstream syncs
 - [Using Automata](using-automata.md) — connecting Claude, organizations and roles, the MCP tools, scoping a token, telemetry
 - [WhatsApp connections](whatsapp.md) — reading and searching, history import, bringing your own Evolution server
 - [Telegram connections](telegram.md) — setting up the bridge, what syncs, bringing your own bridge

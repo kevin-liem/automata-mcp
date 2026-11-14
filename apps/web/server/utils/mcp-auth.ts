@@ -155,7 +155,11 @@ export async function resolveMediaDownloadAuth(value: string) {
   return auth?.tokenId === grant.tokenId ? { auth, grant } : undefined
 }
 
-async function resolveMcpAuthHash(hash: string): Promise<McpAuth | undefined> {
+/** Trusted internal callers only: OAuth and file grants authenticate before using this resolver. */
+export async function resolveMcpAuthHash(
+  hash: string,
+  { recordUse = true }: { recordUse?: boolean } = {},
+): Promise<McpAuth | undefined> {
 
   // ── who this token still reaches ─────────────────────────────────────────
   //
@@ -314,9 +318,11 @@ async function resolveMcpAuthHash(hash: string): Promise<McpAuth | undefined> {
   }
 
   // Best-effort; a write failure must not fail an otherwise valid request.
-  void appDb()
-    .then(sql => sql`UPDATE app.mcp_tokens SET last_used_at = now() WHERE id = ${record.id}`)
-    .catch(() => {})
+  if (recordUse) {
+    void appDb()
+      .then(sql => sql`UPDATE app.mcp_tokens SET last_used_at = now() WHERE id = ${record.id}`)
+      .catch(() => {})
+  }
 
   return auth
 }
