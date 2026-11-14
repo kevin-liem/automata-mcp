@@ -18,10 +18,12 @@ upstream published image does not include it.
 
 1. Set `NUXT_PUBLIC_APP_URL` to the public **HTTPS origin**, such as
    `https://automata.example.com`, without a subpath, query, or credentials.
-2. Generate persistent OAuth keys once, directly into your gitignored `.env`:
+2. From the repository root, generate persistent OAuth keys once into your
+   gitignored `.env`. The script writes the file itself; shell redirection is
+   unnecessary:
 
    ```bash
-   node apps/web/modules/mcp-oauth/keys.mjs >> .env
+   node apps/web/modules/mcp-oauth/keys.mjs --append-env .env
    ```
 
    This appends `NUXT_MCP_OAUTH_COOKIE_KEY`, `NUXT_MCP_OAUTH_ENCRYPTION_KEY`,
@@ -29,6 +31,20 @@ upstream published image does not include it.
    database. For Railway or another host, copy those three values into the web
    service's environment variables. Use the JWKS JSON value without the `.env`
    file's outer single quotes in a hosting dashboard.
+
+   Existing settings are preserved. If any OAuth key already has a value, the
+   command leaves the file unchanged to avoid rotating live credentials.
+
+   **Git Bash on Windows:** `stdout is not a tty` usually means `node` is an
+   alias or wrapper using `winpty`, which rejects redirected stdout. Use the
+   command above without `>> .env`, or invoke Node directly:
+
+   ```bash
+   node.exe apps/web/modules/mcp-oauth/keys.mjs --append-env .env
+   ```
+
+   Without `--append-env`, the script still prints the three assignments for
+   compatibility with existing scripts.
 3. Set `NUXT_MCP_OAUTH_ENABLED=true` and restart the web app. Compose forwards
    the four `NUXT_MCP_OAUTH_*` variables; the all-in-one image accepts them
    directly. HTTP loopback origins are supported only with the development
@@ -135,8 +151,8 @@ pnpm build
 TEST_DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/postgres TEST_OAUTH_BUILD=true pnpm test:oauth
 ```
 
-The first command runs configuration, redirect, encryption, and metadata
-guards. The integration suite runs only with `TEST_DATABASE_URL`; its role
+The first command runs configuration, redirect, encryption, metadata guards,
+and key-generator file handling. The integration suite runs only with `TEST_DATABASE_URL`; its role
 needs `CREATEDB`. It creates a uniquely named disposable database, applies the
 real app and OAuth migrations, tests HTTP flows, then drops only that database.
 It never uses your app's tables as fixtures. Run `pnpm typecheck`,
