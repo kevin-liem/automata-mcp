@@ -304,6 +304,7 @@ function statusOf(token: TokenRow) {
 
 <template>
   <section class="space-y-4">
+    <McpOAuthConnect />
     <div class="flex items-end justify-between gap-4">
       <div>
         <h2 class="font-heading text-lg font-semibold">

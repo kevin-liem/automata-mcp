@@ -1,3 +1,5 @@
+import { oauthReturnPath } from '~~/modules/mcp-oauth/shared'
+
 const PUBLIC_ROUTES = new Set(['/login', '/signup'])
 
 /** Reachable while signed in but belonging to no organization. */
@@ -64,6 +66,8 @@ export default defineNuxtRouteMiddleware(async (to) => {
   }
 
   if (user.value && isPublic) {
+    const destination = oauthReturnPath(to.query.oauth_return)
+    if (destination) return navigateTo(destination, { external: true })
     return navigateTo('/instances')
   }
 

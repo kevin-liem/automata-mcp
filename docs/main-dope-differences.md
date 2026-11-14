@@ -8,6 +8,7 @@ reviewed upstream tip. Use `git diff origin/main dope` to compare branch content
 
 | Area | Main | DOPE |
 | --- | --- | --- |
+| Agent OAuth | Native connector tokens in a Bearer header or URL. | `dev` adds an optional [built-in OAuth module](oauth.md), disabled by default, using existing Automata accounts and token policies. |
 | WhatsApp media | WhatsApp tools read and search message records and send text. | Also includes `dev`'s `get-whatsapp-media` tool: scoped, size-capped attachment retrieval with five-minute download links, live authorization, and explicit native, file or base64 delivery. |
 | Tool-call history | Hosted Free requires recording, including after a downgrade to Free. On Pro and self-hosted deployments, an admin can opt in from the Organization page. | Recording starts off on every plan. An organization admin can explicitly enable it through `PATCH /api/org` with `recordToolCalls: true`. The Organization page omits the switch. The legacy `tool_calls_required` field is cleared by the cloud service. |
 | PostHog | Hosted browser analytics collect pageviews and connection and token events when `NUXT_PUBLIC_POSTHOG_KEY` is configured. | The PostHog integration is deferred. |

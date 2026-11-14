@@ -51,6 +51,11 @@ services:
     environment:
       NUXT_DATABASE_URL: *database-url
       NUXT_PUBLIC_APP_URL: ${NUXT_PUBLIC_APP_URL:?set NUXT_PUBLIC_APP_URL in .env}
+      # Optional native agent OAuth. Its provider and schema stay off by default.
+      NUXT_MCP_OAUTH_ENABLED: ${NUXT_MCP_OAUTH_ENABLED:-false}
+      NUXT_MCP_OAUTH_COOKIE_KEY: ${NUXT_MCP_OAUTH_COOKIE_KEY:-}
+      NUXT_MCP_OAUTH_ENCRYPTION_KEY: ${NUXT_MCP_OAUTH_ENCRYPTION_KEY:-}
+      NUXT_MCP_OAUTH_JWKS: ${NUXT_MCP_OAUTH_JWKS:-}
       NUXT_WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET in .env}
 
       # Sign-up. Unset = invite-only; see docs/self-hosting.md "Who can sign up".
