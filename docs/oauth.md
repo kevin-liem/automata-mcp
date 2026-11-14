@@ -67,11 +67,11 @@ to use their current authentication path.
 ## Connect an agent
 
 On a connection's token panel, **Connect with OAuth** shows the common `/mcp`
-URL. Enter that URL in Codex, Gemini's custom MCP app, or Claude's custom
-connector and choose OAuth. The authorization opens Automata, including the
-existing sign-in and MFA steps when needed. Choose your token policy and allow
-access. All users use the same URL; their authorizations select different
-connections and permissions.
+URL. Enter that URL in ChatGPT's custom plugin, Codex, Gemini's custom MCP app,
+or Claude's custom connector and choose OAuth. The authorization opens Automata,
+including the existing sign-in and MFA steps when needed. Choose your token
+policy and allow access. All users use the same URL; their authorizations select
+different connections and permissions.
 
 The module provides OAuth authorization-code flow with mandatory S256 PKCE,
 client metadata documents, and dynamic client registration. It supports public
@@ -81,11 +81,25 @@ loopback callbacks support ephemeral ports through the provider's native-client
 matching. Discovery, client metadata fetching, and token exchange must be
 reachable from the agent's infrastructure.
 
-The integration suite exercises Codex and Claude client metadata profiles and
-Gemini dynamic registration using mock client metadata and real PostgreSQL.
+ChatGPT's client metadata currently prefers `private_key_jwt` but also declares
+support for public-client authentication (`none`). The module selects `none`
+and requires PKCE, following [OpenAI's capability negotiation guidance](https://developers.openai.com/plugins/build/auth).
+It intersects metadata grant capabilities with `authorization_code` and
+`refresh_token`; other advertised grants are not enabled. Clients that require
+JWT authentication without supporting `none` are rejected. Dynamic registration
+still rejects unsupported grant types rather than silently changing them.
+
+The integration suite exercises a snapshot of ChatGPT's published metadata,
+Codex and Claude client metadata profiles, and Gemini dynamic registration
+using mock metadata fetching and real PostgreSQL.
 These protocol tests do not substitute for connecting an actual hosted client.
 Before production rollout, connect each client you use, run a read-only tool,
 refresh the connection, revoke it in Automata, and confirm access stops.
+
+If authorization fails before a redirect, the error page includes the OAuth
+error code and a reference matching `[mcp-oauth] OAuth request refused` in the
+server logs. Use that reference to investigate, then restart the connection
+from the agent after resolving the error.
 
 ## Access, expiry, and revocation
 

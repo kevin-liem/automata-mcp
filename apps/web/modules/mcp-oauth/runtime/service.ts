@@ -6,6 +6,7 @@ import { AUTHORIZE_PATH, INTERACTION_PATH, MCP_SCOPE } from '../shared'
 import type { OAuthConfig } from './config'
 import { fetchClientMetadata } from './metadata'
 import { migrateOAuth, postgresAdapter, storage } from './storage'
+import { MCP_GRANT_TYPES, negotiateCimdCapabilities } from './client-metadata'
 
 export const PROVIDER_SESSION_COOKIE = 'automata_oauth_session'
 export const ACCESS_TTL = 60 * 60
@@ -89,11 +90,11 @@ export async function createOAuthService(
         },
       },
     },
-    fetch: fetchMetadata,
+    fetch: negotiateCimdCapabilities(fetchMetadata),
     clientAuthMethods: ['none', 'client_secret_basic', 'client_secret_post'],
     clientBasedCORS: (_ctx, origin, client) => client.clientAuthMethod === 'none'
       && client.redirectUris?.some(uri => new URL(uri).origin === origin) === true,
-    clientDefaults: { grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] },
+    clientDefaults: { grant_types: MCP_GRANT_TYPES, response_types: ['code'] },
     extraClientMetadata: {
       properties: ['redirect_uris', 'grant_types', 'response_types'],
       validator: (_ctx, name, value) => {
@@ -102,7 +103,7 @@ export async function createOAuthService(
           throw new errors.InvalidClientMetadata('Use an HTTPS or loopback HTTP redirect URI.')
         }
         if (name === 'grant_types' && (!Array.isArray(value)
-          || !value.every(grant => ['authorization_code', 'refresh_token'].includes(grant)))) {
+          || !value.every(grant => MCP_GRANT_TYPES.includes(grant)))) {
           throw new errors.InvalidClientMetadata('Only authorization_code and refresh_token grants are supported.')
         }
         if (name === 'response_types' && (!Array.isArray(value) || value.some(response => response !== 'code'))) {
@@ -125,9 +126,18 @@ export async function createOAuthService(
     rotateRefreshToken: true,
     revokeGrantPolicy: () => true,
     expiresWithSession: () => false,
-    renderError: (ctx) => {
+    renderError: (ctx, output) => {
+      const reference = randomUUID()
+      const code = typeof output.error === 'string' && /^[a-z_]{1,64}$/.test(output.error) ? output.error : 'server_error'
+      const description = typeof output.error_description === 'string'
+        ? output.error_description.replace(/[\r\n\t]/g, ' ').slice(0, 500)
+        : 'The requesting app could not be authorized.'
+      // Protocol error fields only: never log request parameters, cookies,
+      // authorization codes, client secrets, or access/refresh tokens.
+      console.warn('[mcp-oauth] OAuth request refused:', { reference, error: code, description })
+      ctx.set('x-request-id', reference)
       ctx.type = 'text'
-      ctx.body = 'Authorization could not be completed. Restart the connection from your agent.'
+      ctx.body = `Authorization could not be completed.\n\n${description}\nError: ${code}\nReference: ${reference}\n\nRestart the connection from your agent.`
     },
     findAccount: async (_ctx, id) => {
       const auth = await resolveAuthorization(id)

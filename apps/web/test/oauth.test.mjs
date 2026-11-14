@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import postgres from 'postgres'
 import * as h3 from 'h3'
+
+// Published at https://chatgpt.com/oauth/client.json (2026-11-14).
+const chatgptMetadata = JSON.parse(readFileSync(new URL('./fixtures/chatgpt-oauth-client.json', import.meta.url), 'utf8'))
 
 // Run the real Nuxt utilities under Node's TS stripper, without a Nuxt server.
 registerHooks({ resolve(specifier, context, next) {
@@ -23,6 +26,7 @@ const { readOAuthConfig, oauthEnabled } = await import('../modules/mcp-oauth/run
 const { oauthReturnPath } = await import('../modules/mcp-oauth/shared.ts')
 const { digest, seal, unseal } = await import('../modules/mcp-oauth/runtime/crypto.ts')
 const { publicMetadataAddress, fetchClientMetadata } = await import('../modules/mcp-oauth/runtime/metadata.ts')
+const { negotiateCimdCapabilities } = await import('../modules/mcp-oauth/runtime/client-metadata.ts')
 const { createOAuthService } = await import('../modules/mcp-oauth/runtime/service.ts')
 const { handleOAuthRequest } = await import('../modules/mcp-oauth/runtime/http.ts')
 const { postgresAdapter } = await import('../modules/mcp-oauth/runtime/storage.ts')
@@ -83,6 +87,43 @@ test('client metadata cannot reach private networks or non-HTTPS URLs', async ()
   assert.equal(publicMetadataAddress('8.8.8.8', 4), true)
   await assert.rejects(fetchClientMetadata('http://example.test/client.json'), /HTTPS/)
   await assert.rejects(fetchClientMetadata('https://127.0.0.1/client.json'), /public/)
+})
+
+test('CIMD capability negotiation selects only published public-client methods and supported grants', async () => {
+  const normalized = negotiateCimdCapabilities(async () => Response.json(chatgptMetadata, {
+    headers: { 'cache-control': 'max-age=300', 'content-length': '9999', etag: 'original' },
+  }))
+  const response = await normalized(chatgptMetadata.client_id)
+  const metadata = await response.json()
+  assert.equal(metadata.client_id, chatgptMetadata.client_id)
+  assert.equal(metadata.token_endpoint_auth_method, 'none')
+  assert.equal(metadata.token_endpoint_auth_signing_alg, undefined)
+  assert.deepEqual(metadata.grant_types, ['authorization_code', 'refresh_token'])
+  assert.deepEqual(metadata.redirect_uris, chatgptMetadata.redirect_uris)
+  assert.equal(response.headers.get('cache-control'), 'max-age=300')
+  assert.equal(response.headers.get('content-length'), null)
+  assert.equal(response.headers.get('etag'), null)
+  assert.equal(chatgptMetadata.token_endpoint_auth_method, 'private_key_jwt', 'the published fixture must remain unchanged')
+})
+
+test('CIMD negotiation fails closed when public PKCE or authorization-code capability is absent', async () => {
+  for (const patch of [
+    { token_endpoint_auth_methods_supported: ['private_key_jwt'] },
+    { token_endpoint_auth_methods_supported: 'none' },
+    { token_endpoint_auth_methods_supported: ['none', 42] },
+    { token_endpoint_auth_method: 'client_secret_post' },
+    { grant_types: ['urn:ietf:params:oauth:grant-type:jwt-bearer'] },
+    { grant_types: ['authorization_code', 42] },
+  ]) {
+    const normalized = negotiateCimdCapabilities(async () => Response.json({ ...chatgptMetadata, ...patch }))
+    await assert.rejects(normalized(chatgptMetadata.client_id))
+  }
+  const legacy = { ...chatgptMetadata }
+  delete legacy.token_endpoint_auth_methods_supported
+  const normalized = negotiateCimdCapabilities(async () => Response.json(legacy))
+  assert.equal((await (await normalized(legacy.client_id)).json()).token_endpoint_auth_method, 'private_key_jwt')
+  const wrongIdentity = negotiateCimdCapabilities(async () => Response.json(chatgptMetadata))
+  assert.equal((await (await wrongIdentity('https://other.example/client.json')).json()).client_id, chatgptMetadata.client_id)
 })
 
 class Browser {
@@ -175,6 +216,10 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
     }
     const metadata = async input => {
       const id = input instanceof Request ? input.url : input.toString()
+      if (id === chatgptMetadata.client_id) return Response.json(chatgptMetadata)
+      if (id === 'https://chatgpt.com/oauth/private-only/client.json') return Response.json({
+        ...chatgptMetadata, client_id: id, token_endpoint_auth_methods_supported: ['private_key_jwt'],
+      })
       const codex = id === 'https://chatgpt.com/oauth/codex/client.json'
       const claude = id === 'https://claude.ai/oauth/mcp-oauth-client-metadata'
       assert.ok(codex || claude, `unexpected metadata fetch: ${id}`)
@@ -208,6 +253,7 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
     let client = browser()
     const codex = { client_id: 'https://chatgpt.com/oauth/codex/client.json', callback: 'http://localhost:18765/callback' }
     const claude = { client_id: 'https://claude.ai/oauth/mcp-oauth-client-metadata', callback: 'https://claude.ai/api/mcp/auth_callback' }
+    const chatgpt = { client_id: chatgptMetadata.client_id, callback: chatgptMetadata.redirect_uris[0] }
     async function register(callback, name = 'Gemini', authMethod = 'none') {
       const response = await client.fetch('/oauth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
         client_name: name, application_type: 'web', redirect_uris: [callback], token_endpoint_auth_method: authMethod,
@@ -270,6 +316,7 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
       assert.deepEqual(metadata.code_challenge_methods_supported, ['S256'])
       assert.ok(metadata.token_endpoint_auth_methods_supported.includes('none'))
       assert.equal(metadata.client_id_metadata_document_supported, true)
+      assert.equal(metadata.authorization_response_iss_parameter_supported, true)
     })
     await t.test('unauthenticated consent returns through the existing login', async () => {
       const who = browser()
@@ -297,6 +344,48 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
         assert.equal(auth.tokenId, 'policy-a')
         assert.deepEqual(auth.scope.toolNames, ['list-tables'])
       }
+    })
+    await t.test('ChatGPT published CIMD negotiates public-client PKCE despite its JWT preference', async () => {
+      const tokens = await issue('alice', 'policy-a', chatgpt)
+      assert.equal((await call(tokens.access_token)).status, 200)
+      const renewed = await refresh(tokens, chatgpt)
+      assert.equal(renewed.status, 200, await renewed.clone().text())
+      const registered = await service.provider.Client.find(chatgpt.client_id)
+      assert.equal(registered.clientAuthMethod, 'none')
+      assert.deepEqual(registered.grantTypes.sort(), ['authorization_code', 'refresh_token'])
+    })
+    await t.test('ChatGPT still requires PKCE and cannot use the unsupported JWT bearer grant', async () => {
+      const approved = await approve(browser('alice'), 'policy-a', chatgpt)
+      const refused = await exchange(chatgpt, {
+        grant_type: 'authorization_code', code: approved.code, code_verifier: 'wrong'.repeat(12), redirect_uri: chatgpt.callback,
+      })
+      assert.equal(refused.status, 400)
+      assert.equal((await refused.json()).error, 'invalid_grant')
+      const jwtGrant = await exchange(chatgpt, {
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: 'not-a-valid-assertion',
+      })
+      assert.equal(jwtGrant.status, 400)
+      assert.equal((await jwtGrant.json()).error, 'unsupported_grant_type')
+      const invalidRegistration = await client.fetch('/oauth/register', { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+          client_name: 'Unsupported DCR grant', redirect_uris: [chatgpt.callback], token_endpoint_auth_method: 'none',
+          grant_types: chatgptMetadata.grant_types, response_types: ['code'],
+        }),
+      })
+      assert.equal(invalidRegistration.status, 400)
+    })
+    await t.test('incompatible client metadata returns a protocol error and support reference without exposing the request', async () => {
+      const agent = { ...chatgpt, client_id: 'https://chatgpt.com/oauth/private-only/client.json' }
+      const { response, verifier } = await start(browser('alice'), agent)
+      assert.ok(response.status >= 400)
+      const body = await response.text()
+      assert.match(body, /Error: invalid_client/)
+      const reference = response.headers.get('x-request-id')
+      assert.match(reference, /^[a-f0-9-]{36}$/)
+      assert.ok(body.includes(reference))
+      assert.ok(!body.includes(verifier))
+      assert.ok(!body.includes('session-alice'))
+      assert.ok(!body.includes('test-state'))
     })
     await t.test('cookies never authenticate MCP; native header and path tokens still work', async () => {
       assert.equal((await browser('alice').fetch('/mcp', { method: 'POST' })).status, 401)
