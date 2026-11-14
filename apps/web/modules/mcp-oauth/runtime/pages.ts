@@ -18,7 +18,7 @@ export function page(event: H3Event, title: string, body: string, status = 200):
     button{font:inherit;cursor:pointer;border:1px solid #282820;border-radius:6px;padding:8px 18px;margin:8px 8px 0 0;background:#282820;color:#fffdf7}
     button.secondary{background:transparent;color:#282820}fieldset{border:0;padding:0}label{display:block;cursor:pointer;border-top:1px solid #dedbd0;padding:16px 0}
     ul{padding-left:22px}code{overflow-wrap:anywhere}input[type=radio]{accent-color:#282820}
-    </style></head><body><main><a href="/instances">← Automata</a><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`
+    </style></head><body><main><a href="/instances">← DOPE</a><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`
 }
 
 export function scopeSummary(auth: McpAuth): string {

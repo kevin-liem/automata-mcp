@@ -311,6 +311,7 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
       assert.match(response.headers.get('www-authenticate'), /resource_metadata="https:\/\/automata.test\/\.well-known\/oauth-protected-resource\/mcp"/)
       const resource = await (await client.fetch('/.well-known/oauth-protected-resource/mcp')).json()
       assert.equal(resource.resource, config.resource)
+      assert.equal(resource.resource_name, 'DOPE MCP')
       const metadata = await (await client.fetch('/.well-known/oauth-authorization-server')).json()
       assert.ok(metadata.registration_endpoint.endsWith('/oauth/register'))
       assert.deepEqual(metadata.code_challenge_methods_supported, ['S256'])
@@ -331,6 +332,20 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
       assert.equal((await who.fetch(path)).status, 200)
       const used = await db`SELECT id FROM app.mcp_tokens WHERE last_used_at IS NOT NULL`
       assert.equal(used.length, 0)
+    })
+    await t.test('approval keeps the browser form origin, displays its ten-minute deadline, and uses DOPE branding', async () => {
+      const who = browser('alice')
+      const { response } = await start(who)
+      const path = new URL(location(response), origin).pathname
+      const consent = await who.fetch(path)
+      assert.equal(consent.headers.get('referrer-policy'), 'same-origin')
+      const html = await consent.text()
+      assert.match(html, /← DOPE/)
+      assert.ok(!html.includes('Automata'))
+      const interaction = await service.provider.Interaction.find(path.split('/').at(-1))
+      assert.equal(interaction.exp - interaction.iat, 600)
+      assert.ok(html.includes(new Date(interaction.exp * 1000).toISOString()))
+      assert.match(html, /This approval link expires at/)
     })
     await t.test('Gemini DCR, Codex CIMD with ephemeral localhost port, and Claude CIMD complete the flow', async () => {
       for (const agent of [gemini, codex, claude]) {
@@ -425,9 +440,21 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
       const html = await (await who.fetch(path)).text()
       const fields = { csrf: csrf(html), decision: 'allow', token: 'policy-a' }
       assert.equal((await who.post(path, fields, 'https://evil.test')).status, 403)
-      assert.equal((await who.post(path, { ...fields, csrf: 'wrong' })).status, 403)
+      assert.equal((await who.post(path, fields, 'null')).status, 403)
+      const invalidForm = await who.post(path, { ...fields, csrf: 'wrong' })
+      assert.equal(invalidForm.status, 403)
+      const invalidHtml = await invalidForm.text()
+      assert.match(invalidHtml, /Approval could not be verified/)
+      assert.ok(!invalidHtml.includes('Approval expired'))
+      assert.match(invalidHtml, /← DOPE/)
       await db`UPDATE mcp_oauth.records SET expires_at = now() - interval '1 second' WHERE model = 'Interaction'`
-      assert.equal((await who.post(path, fields)).status, 400)
+      for (const expired of [await who.post(path, fields), await who.fetch(path)]) {
+        assert.equal(expired.status, 400)
+        const expiredHtml = await expired.text()
+        assert.match(expiredHtml, /Approval is no longer available/)
+        assert.match(expiredHtml, /← DOPE/)
+        assert.ok(!expiredHtml.includes('__NUXT'))
+      }
     })
     await t.test('denial returns access_denied and does not grant access', async () => {
       const who = browser('alice')
@@ -651,7 +678,25 @@ test('OAuth flows use real Automata authorization and PostgreSQL storage', {
         await listTools(tokens.access_token)
         const management = await browser('alice').fetch('/oauth/connections')
         assert.equal(management.status, 200)
-        assert.match(await management.text(), /Connected agents/)
+        const managementHtml = await management.text()
+        assert.match(managementHtml, /Connected agents/)
+        assert.match(managementHtml, /← DOPE/)
+        const refused = browser('alice')
+        const pending = await start(refused, agent)
+        const approvalPath = new URL(location(pending.response), origin).pathname
+        const consent = await refused.fetch(approvalPath)
+        assert.equal(consent.headers.get('referrer-policy'), 'same-origin')
+        const consentHtml = await consent.text()
+        const invalid = await refused.post(approvalPath, { csrf: 'wrong', decision: 'allow', token: 'policy-a' })
+        assert.equal(invalid.status, 403)
+        const invalidHtml = await invalid.text()
+        assert.match(invalidHtml, /Approval could not be verified/)
+        assert.ok(!invalidHtml.includes('__NUXT'), 'approval errors must not hydrate a redacted URL into browser history')
+        await db`UPDATE mcp_oauth.records SET expires_at = now() - interval '1 second'
+          WHERE model = 'Interaction' AND id_hash = ${digest(approvalPath.split('/').at(-1))}`
+        const expired = await refused.post(approvalPath, { csrf: csrf(consentHtml), decision: 'allow', token: 'policy-a' })
+        assert.equal(expired.status, 400)
+        assert.match(await expired.text(), /Approval is no longer available/)
         const who = browser()
         const started = await start(who, agent)
         const path = new URL(location(started.response), origin).pathname

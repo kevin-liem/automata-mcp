@@ -1,7 +1,7 @@
 # Optional MCP OAuth
 
-OAuth lives in Automata itself. Users add `https://YOUR-AUTOMATA-HOST/mcp` in
-their agent, sign in with their existing Automata account (including MFA),
+OAuth lives in DOPE itself. Users add `https://YOUR-DOPE-HOST/mcp` in
+their agent, sign in with their existing DOPE account (including MFA),
 choose a connector token by name, and approve. No bridge account or copied
 Bearer secret is needed. The agent obtains and refreshes its own access tokens.
 
@@ -17,7 +17,7 @@ OAuth is off by default. Use a build of this fork containing the module; the
 upstream published image does not include it.
 
 1. Set `NUXT_PUBLIC_APP_URL` to the public **HTTPS origin**, such as
-   `https://automata.example.com`, without a subpath, query, or credentials.
+   `https://dope.example.com`, without a subpath, query, or credentials.
 2. From the repository root, generate persistent OAuth keys once into your
    gitignored `.env`. The script writes the file itself; shell redirection is
    unnecessary:
@@ -61,14 +61,14 @@ silently permit access or masquerade as a revoked credential.
 
 Do not generate new keys on every deployment. Changing the encryption key makes
 existing OAuth records unreadable. Changing the public origin requires clients
-to reconnect to the new resource. Existing Automata connector tokens continue
+to reconnect to the new resource. Existing DOPE connector tokens continue
 to use their current authentication path.
 
 ## Connect an agent
 
 On a connection's token panel, **Connect with OAuth** shows the common `/mcp`
 URL. Enter that URL in ChatGPT's custom plugin, Codex, Gemini's custom MCP app,
-or Claude's custom connector and choose OAuth. The authorization opens Automata,
+or Claude's custom connector and choose OAuth. The authorization opens DOPE,
 including the existing sign-in and MFA steps when needed. Choose your token
 policy and allow access. All users use the same URL; their authorizations select
 different connections and permissions.
@@ -94,7 +94,7 @@ Codex and Claude client metadata profiles, and Gemini dynamic registration
 using mock metadata fetching and real PostgreSQL.
 These protocol tests do not substitute for connecting an actual hosted client.
 Before production rollout, connect each client you use, run a read-only tool,
-refresh the connection, revoke it in Automata, and confirm access stops.
+refresh the connection, revoke it in DOPE, and confirm access stops.
 
 If authorization fails before a redirect, the error page includes the OAuth
 error code and a reference matching `[mcp-oauth] OAuth request refused` in the
@@ -103,6 +103,12 @@ from the agent after resolving the error.
 
 ## Access, expiry, and revocation
 
+- Approval links last 10 minutes from starting the agent connection, including
+  time spent signing in and reviewing token policies. The consent page shows
+  its exact deadline in GMT. An expired, used, or unavailable approval link
+  requires a new connection attempt from the agent. A form that cannot be
+  verified offers a reload instead of claiming the approval expired.
+- Authorization codes last two minutes after approval and can be used once.
 - Access tokens last one hour. Refresh tokens rotate on use; replaying an old
   refresh token revokes its grant. An authorization lasts at most 30 days.
 - Each authorization binds to one connector token and its credential revision.
@@ -127,7 +133,7 @@ database.
 
 Keep `whatsapp-bridge` available while migrating. Its OAuth tokens belong to a
 different issuer and cannot be imported: each user connects their agent once
-to Automata's `/mcp` URL instead.
+to DOPE's `/mcp` URL instead.
 
 ## Maintaining the fork
 
@@ -155,6 +161,12 @@ it does not patch `node_modules`. Recheck discovery precedence and buffered
 request handling when upgrading Nuxt, Nitro, the MCP toolkit, or
 `oidc-provider`. Disabling OAuth requires only the environment switch, not
 removing these files.
+
+Keep the OAuth pages' `Referrer-Policy: same-origin`: `no-referrer` makes browser
+form navigations send `Origin: null`, which the CSRF origin check must reject.
+Expected approval errors render module-owned HTML, avoiding Nuxt error
+hydration that could replace the browser location with a redacted diagnostic
+URL. OAuth URLs remain redacted in server error reporting.
 
 ## Tests
 

@@ -13,6 +13,12 @@ const PROVIDER_ROUTES = new Set([
   '/.well-known/oauth-authorization-server', '/.well-known/openid-configuration',
 ])
 
+function unavailableApproval(event: H3Event) {
+  return page(event, 'Approval is no longer available', `<section>
+    <p>This approval link is no longer active in this browser.</p>
+    <p>Restart the connection from your agent to request access again.</p></section>`, 400)
+}
+
 export async function handleOAuthRequest(event: H3Event, service: OAuthService, sessionHash?: string) {
   const { config, provider } = service
   const path = event.path.split('?')[0]!
@@ -22,7 +28,10 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
   event.node.req.headers['x-forwarded-host'] = origin.host
   event.node.req.headers['x-forwarded-proto'] = origin.protocol.slice(0, -1)
   setHeader(event, 'cache-control', 'no-store')
-  setHeader(event, 'referrer-policy', 'no-referrer')
+  // no-referrer makes browser form navigations send Origin: null, which fails
+  // the CSRF origin check. Keep same-origin forms verifiable without sending
+  // approval URLs to the agent's external callback.
+  setHeader(event, 'referrer-policy', 'same-origin')
   setHeader(event, 'x-content-type-options', 'nosniff')
 
   if (path === PROTECTED_METADATA_PATH || path === '/.well-known/oauth-protected-resource') {
@@ -30,7 +39,7 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
     setHeader(event, 'access-control-allow-origin', '*')
     return {
       resource: config.resource, authorization_servers: [config.origin],
-      bearer_methods_supported: ['header'], scopes_supported: [MCP_SCOPE], resource_name: 'Automata MCP',
+      bearer_methods_supported: ['header'], scopes_supported: [MCP_SCOPE], resource_name: 'DOPE MCP',
     }
   }
 
@@ -68,13 +77,18 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
 
     const uid = path.slice(path.lastIndexOf('/') + 1)
     if (form && (!validForm('consent', uid) || !['allow', 'deny'].includes(String(form.decision)))) {
-      throw createError({ statusCode: 403, message: 'Approval expired. Restart the connection from your agent.' })
+      return page(event, 'Approval could not be verified', `<section>
+        <p>Reload the approval page and try again. If you signed in again in another tab, restart the connection from your agent.</p>
+        <p><a href="${path}">Reload approval page</a></p></section>`, 403)
     }
     // The GET validates the provider cookie before exposing a session-bound
     // CSRF proof. The POST needs that proof even if the provider cookie was lost.
-    const details = form ? await provider.Interaction.find(uid) : await provider.interactionDetails(event.node.req, event.node.res)
-    if (!details || details.uid !== uid || (form && details.session)) {
-      throw new errors.SessionNotFound('This approval expired. Restart the connection from your agent.')
+    const details = await (form ? provider.Interaction.find(uid) : provider.interactionDetails(event.node.req, event.node.res)).catch((error) => {
+      if (error instanceof errors.SessionNotFound) return undefined
+      throw error
+    })
+    if (!details || details.uid !== uid || details.result || (form && details.session)) {
+      return unavailableApproval(event)
     }
     const { client_id: clientId, redirect_uri: redirectUri } = details.params
     if (typeof clientId !== 'string' || typeof redirectUri !== 'string') throw new errors.InvalidRequest('Invalid client request.')
@@ -95,6 +109,7 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
         // A simultaneous submission may have consumed this interaction first.
         // Do not leave a second, never-approved authorization in the user's list.
         if (authorization) await service.revoke(user.id, authorization.id)
+        if (error instanceof errors.SessionNotFound) return unavailableApproval(event)
         throw error
       }
       const resumePath = `${AUTHORIZE_PATH}/${uid}`
@@ -107,12 +122,14 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
     }
 
     const choices = await service.choices(user.id)
+    const deadline = new Date(details.exp * 1000)
     const options = choices.map(({ row, auth }, index) => `<label><input type="radio" name="token" value="${escapeHtml(row.id)}" ${index === 0 ? 'checked' : ''} required>
       <strong>${escapeHtml(row.connection_name)} · ${escapeHtml(row.label || 'Untitled token')}</strong><br>
       <small>${escapeHtml(scopeSummary(auth))}${auth.sendDisclaimer ? `<br>Message footer: ${escapeHtml(auth.sendDisclaimer)}` : ''}</small></label>`).join('')
     return page(event, 'Authorize agent access', `<section><p><strong>${escapeHtml(clientName)}</strong> is requesting access to one connection.</p>
       <p>Signed in as <strong>${escapeHtml(user.email)}</strong>.<br>Returns to <strong>${escapeHtml(new URL(redirectUri).host)}</strong>.</p>
       <p>Approve only if you started this connection from that app. Access follows the selected token’s permissions and expiry.</p>
+      <p><small>This approval link expires at <time datetime="${deadline.toISOString()}">${deadline.toUTCString()}</time>.</small></p>
       <form method="post" action="${path}"><input type="hidden" name="csrf" value="${csrf('consent', uid)}">
       ${choices.length ? `<fieldset><legend>Choose a connector token</legend>${options}</fieldset><button type="submit" name="decision" value="allow">Allow access</button>`
         : '<p>No eligible connector tokens. Ask an organization admin to issue a token to your account, then restart from your agent.</p>'}
@@ -125,7 +142,7 @@ export async function handleOAuthRequest(event: H3Event, service: OAuthService, 
   // Canonical external origin, independent of untrusted Host/Forwarded headers.
   if (path === AUTHORIZE_PATH) {
     if (event.method !== 'GET') throw createError({ statusCode: 405 })
-    // Force an Automata login/consent check for each new authorization, rather
+    // Force a DOPE login/consent check for each new authorization, rather
     // than accepting an old provider session's selected connection.
     delete event.node.req.headers.cookie
     const url = new URL(event.node.req.url!, config.origin)
